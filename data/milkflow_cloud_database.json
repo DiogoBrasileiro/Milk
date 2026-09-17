@@ -1,0 +1,128 @@
+{
+  "users": {
+    "diogobrasileirofotografia@gmail.com": {
+      "id": "usr_641306",
+      "email": "diogobrasileirofotografia@gmail.com",
+      "passwordHash": "7e5e03bea521455224b349d14c5e516cb9df5329121b65f3c306c852e3dfe9c4",
+      "name": "Diogo Brasileiro",
+      "avatarColor": "#3b82f6",
+      "role": "OWNER",
+      "familyId": "fam_641306",
+      "createdAt": "2026-07-28T18:40:20.407Z"
+    },
+    "641306@milkflow.local": {
+      "id": "usr_641306",
+      "email": "641306@milkflow.local",
+      "passwordHash": "7e5e03bea521455224b349d14c5e516cb9df5329121b65f3c306c852e3dfe9c4",
+      "name": "Diogo Brasileiro",
+      "avatarColor": "#3b82f6",
+      "role": "OWNER",
+      "familyId": "fam_641306",
+      "createdAt": "2026-07-28T18:40:20.407Z"
+    },
+    "fam_641306@milkflow.local": {
+      "id": "usr_641306",
+      "email": "fam_641306@milkflow.local",
+      "passwordHash": "7e5e03bea521455224b349d14c5e516cb9df5329121b65f3c306c852e3dfe9c4",
+      "name": "Diogo Brasileiro",
+      "avatarColor": "#3b82f6",
+      "role": "OWNER",
+      "familyId": "fam_641306",
+      "createdAt": "2026-07-28T18:40:20.407Z"
+    },
+    "cuidador_usr_pair_1786975546670_4duy@milkflow.local": {
+      "id": "usr_pair_1786975546670_4duy",
+      "email": "cuidador_usr_pair_1786975546670_4duy@milkflow.local",
+      "passwordHash": "66a601c9e6976bdac441a02b4796b0c3d10aab0d3d950b42ac4ba38bf75942d9",
+      "name": "Diogo Brasileiro",
+      "avatarColor": "#10b981",
+      "role": "CAREGIVER",
+      "familyId": "fam_641306",
+      "createdAt": "2026-08-17T14:05:46.670Z"
+    }
+  },
+  "families": {
+    "fam_641306": {
+      "id": "fam_641306",
+      "name": "Família Gabriel (641306)",
+      "ownerId": "usr_641306",
+      "createdAt": "2026-07-28T14:05:38.498Z",
+      "babyIds": [
+        "baby_gabriel"
+      ],
+      "pairingCode": "641306"
+    }
+  },
+  "babies": {
+    "fam_641306": [
+      {
+        "id": "baby_gabriel",
+        "name": "Gabriel",
+        "gender": "masculino",
+        "familyId": "fam_641306",
+        "allergies": [],
+        "birthDate": "2026-07-30",
+        "bloodType": "A+",
+        "createdBy": "usr_641306",
+        "birthLength": 49,
+        "birthWeight": 3045,
+        "currentLength": 51.5,
+        "currentWeight": 3210,
+        "pediatricianName": "Dra. Patrícia"
+      }
+    ]
+  },
+  "familyData": {
+    "fam_641306": {
+      "familyId": "fam_641306",
+      "protocolId": "brasil_ms",
+      "batches": [],
+      "transactions": [],
+      "feedings": [],
+      "pumpings": [],
+      "diapers": [],
+      "discomforts": [],
+      "weights": [],
+      "sleepLogs": [],
+      "feedingPhases": [],
+      "auditLogs": [],
+      "aiInsights": [],
+      "customReminderIntervalMinutes": 165,
+      "caregivers": [
+        {
+          "id": "usr_1",
+          "name": "Maria (Mãe)",
+          "role": "mae",
+          "avatarColor": "#ec4899"
+        },
+        {
+          "id": "usr_2",
+          "name": "Diogo Brasileiro (Pai)",
+          "role": "pai",
+          "avatarColor": "#3b82f6"
+        },
+        {
+          "id": "cg_1",
+          "name": "Mãe",
+          "role": "mae",
+          "avatarColor": "#3b82f6"
+        },
+        {
+          "id": "cg_2",
+          "name": "Pai",
+          "role": "pai",
+          "avatarColor": "#10b981"
+        }
+      ],
+      "lastUpdatedAt": "2026-09-11T12:36:00.899Z",
+      "medications": [],
+      "medicationLogs": [],
+      "deletedItemIds": {},
+      "_source": "milkflow_app",
+      "_syncedAt": "2026-09-11T12:21:57.761Z",
+      "diaperStockItems": [],
+      "diaperStockTransactions": [],
+      "diaperShoppingItems": []
+    }
+  }
+}

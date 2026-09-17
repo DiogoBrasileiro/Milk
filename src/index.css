@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 24px);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 12px);
+  }
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom, 24px);
+  }
+}
+
+/* Mobile ergonomics and smooth touch experience */
+html, body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Clear, high-contrast, comfortable inputs across all platforms */
+input[type="text"],
+input[type="number"],
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+input[type="email"],
+input[type="password"],
+select,
+textarea {
+  color-scheme: light;
+  font-size: 14px;
+}
+
+.dark input[type="text"],
+.dark input[type="number"],
+.dark input[type="date"],
+.dark input[type="time"],
+.dark input[type="datetime-local"],
+.dark input[type="email"],
+.dark input[type="password"],
+.dark select,
+.dark textarea {
+  color-scheme: dark;
+}
+
+/* Native date/time picker icon visibility */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.8;
+  filter: none;
+}
+
+/* Hide scrollbar for clean app-like carousel and lists */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Minimum 44px touch targets */
+button, select, input, a {
+  touch-action: manipulation;
+}
+

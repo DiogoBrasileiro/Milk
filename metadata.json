@@ -1,0 +1,6 @@
+{
+  "name": "MilkFlow Baby",
+  "description": "Central inteligente e completa para gestão de mamadas, controle de medicamentos com horários e administração, controle de ordenha por peito e produtividade, estoque FEFO de leite materno com potinhos, curvas de crescimento OMS, rotina de fraldas, sono, desconfortos, relatórios pediátricos e sincronização instantânea em tempo real entre todos os celulares e perfis da família.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

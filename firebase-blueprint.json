@@ -1,0 +1,136 @@
+{
+  "schemaVersion": "2.0.0",
+  "entities": {
+    "User": {
+      "collection": "users",
+      "path": "users/{userId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "email": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "avatarColor": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true },
+        "currentFamilyId": { "type": "string", "required": true },
+        "createdAt": { "type": "string", "required": true }
+      }
+    },
+    "Family": {
+      "collection": "families",
+      "path": "families/{familyId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "ownerId": { "type": "string", "required": true },
+        "createdAt": { "type": "string", "required": true },
+        "babyIds": { "type": "array", "required": true }
+      }
+    },
+    "FamilyMember": {
+      "collection": "members",
+      "path": "families/{familyId}/members/{userId}",
+      "fields": {
+        "userId": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "email": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true },
+        "avatarColor": { "type": "string", "required": true },
+        "joinedAt": { "type": "string", "required": true }
+      }
+    },
+    "Baby": {
+      "collection": "babies",
+      "path": "families/{familyId}/babies/{babyId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "createdBy": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "birthDate": { "type": "string", "required": true },
+        "gender": { "type": "string", "required": true },
+        "birthWeight": { "type": "number", "required": true },
+        "currentWeight": { "type": "number", "required": true },
+        "birthLength": { "type": "number", "required": true }
+      }
+    },
+    "Feeding": {
+      "collection": "feedings",
+      "path": "families/{familyId}/feedings/{feedingId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "timestamp": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "consumedMl": { "type": "number" },
+        "durationMinutes": { "type": "number" },
+        "caregiverId": { "type": "string", "required": true },
+        "caregiverName": { "type": "string", "required": true }
+      }
+    },
+    "PumpingSession": {
+      "collection": "pumpingSessions",
+      "path": "families/{familyId}/pumpingSessions/{sessionId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "timestamp": { "type": "string", "required": true },
+        "totalVolumeMl": { "type": "number", "required": true },
+        "leftVolumeMl": { "type": "number", "required": true },
+        "rightVolumeMl": { "type": "number", "required": true },
+        "targetStorage": { "type": "string", "required": true }
+      }
+    },
+    "MilkBatch": {
+      "collection": "milkBatches",
+      "path": "families/{familyId}/milkBatches/{batchId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "extractedAt": { "type": "string", "required": true },
+        "expiresAt": { "type": "string", "required": true },
+        "originalVolumeMl": { "type": "number", "required": true },
+        "currentVolumeMl": { "type": "number", "required": true },
+        "location": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true }
+      }
+    },
+    "Diaper": {
+      "collection": "diapers",
+      "path": "families/{familyId}/diapers/{diaperId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "timestamp": { "type": "string", "required": true },
+        "hasPee": { "type": "boolean", "required": true },
+        "hasPoop": { "type": "boolean", "required": true }
+      }
+    },
+    "Symptom": {
+      "collection": "symptoms",
+      "path": "families/{familyId}/symptoms/{symptomId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "timestamp": { "type": "string", "required": true },
+        "symptoms": { "type": "array", "required": true },
+        "intensity": { "type": "string", "required": true }
+      }
+    },
+    "Weight": {
+      "collection": "weights",
+      "path": "families/{familyId}/weights/{weightId}",
+      "fields": {
+        "id": { "type": "string", "required": true },
+        "familyId": { "type": "string", "required": true },
+        "babyId": { "type": "string", "required": true },
+        "timestamp": { "type": "string", "required": true },
+        "weightGrams": { "type": "number", "required": true }
+      }
+    }
+  }
+}

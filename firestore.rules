@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Authenticated user check
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+
+    // Helper: Check if user belongs to family
+    function isFamilyMember(familyId) {
+      return isAuthenticated() && (
+        request.auth.uid in get(/databases/$(database)/documents/families/$(familyId)).data.memberIds ||
+        exists(/databases/$(database)/documents/families/$(familyId)/members/$(request.auth.uid))
+      );
+    }
+
+    // Helper: Check if user is the family owner
+    function isFamilyOwner(familyId) {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/families/$(familyId)).data.ownerId == request.auth.uid
+      );
+    }
+
+    // User Profile: Strict Self-Access Only
+    match /users/{userId} {
+      allow read, update, delete: if isAuthenticated() && request.auth.uid == userId;
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Family Root: Member access only, Owner-only modification
+    match /families/{familyId} {
+      allow read: if isFamilyMember(familyId);
+      allow create: if isAuthenticated();
+      allow update, delete: if isFamilyOwner(familyId);
+
+      // Members Subcollection
+      match /members/{memberId} {
+        allow read: if isFamilyMember(familyId);
+        allow write: if isFamilyOwner(familyId);
+      }
+
+      // Babies Subcollection
+      match /babies/{babyId} {
+        allow read: if isFamilyMember(familyId);
+        allow create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Feedings Subcollection
+      match /feedings/{feedingId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Pumping Sessions Subcollection
+      match /pumpingSessions/{sessionId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Milk Batches Subcollection
+      match /milkBatches/{batchId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Diapers Subcollection
+      match /diapers/{diaperId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Symptoms / Discomforts Subcollection
+      match /symptoms/{symptomId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Growth Weights Subcollection
+      match /weights/{weightId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Pediatric Reports Subcollection
+      match /reports/{reportId} {
+        allow read, create, update: if isFamilyMember(familyId);
+        allow delete: if isFamilyOwner(familyId);
+      }
+
+      // Settings Subcollection
+      match /settings/{settingId} {
+        allow read: if isFamilyMember(familyId);
+        allow write: if isFamilyOwner(familyId);
+      }
+    }
+  }
+}
