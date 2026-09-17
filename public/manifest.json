@@ -2,14 +2,15 @@
   "name": "MilkFlow Baby — Gestão de Mamadas e Leite Materno",
   "short_name": "MilkFlow",
   "description": "App para gestão de mamadas, ordenha, estoque FEFO de leite materno e curvas de crescimento OMS.",
-  "start_url": "/",
+  "start_url": "/Milk/",
+  "scope": "/Milk/",
   "display": "standalone",
   "background_color": "#080b10",
   "theme_color": "#2563eb",
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "/Milk/icon.svg",
       "sizes": "192x192 512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"
