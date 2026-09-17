@@ -1,10 +1,9 @@
 import { getClientSupabase, SUPABASE_URL } from './supabaseClient';
 
-// Compatibility layer for the GitHub Pages build.
-// It keeps the existing UI/API calls working while persistence remains in the
-// existing Supabase milkflow_store table. No database rows are deleted/migrated.
+// GitHub Pages compatibility bridge.
+// Uses the EXISTING Supabase row and never migrates/deletes database records.
 const nativeFetch = window.fetch.bind(window);
-const FAMILY_ID = 'fam_641306';
+const FAMILY_ID = 'fam_1786815802222_lu7tvw';
 const FAMILY_CODE = '641306';
 
 const json = (body: any, status = 200) =>
@@ -37,37 +36,51 @@ async function writeFamilyData(familyId: string, value: any) {
   if (error) throw error;
 }
 
-function familyEnvelope(data: any, caregiverName = 'Diogo Brasileiro') {
-  const family = data?.family || {
+function normalizeStoredData(raw: any) {
+  if (!raw) return {};
+  // Old server snapshots may wrap application data in `data` or `familyData`.
+  const applicationData = raw.familyData || raw.data || raw;
+  return { raw, applicationData };
+}
+
+function familyEnvelope(raw: any, caregiverName = 'Diogo Brasileiro') {
+  const { applicationData } = normalizeStoredData(raw);
+  const storedBaby = raw?.baby || applicationData?.baby;
+  const babies = raw?.babies || applicationData?.babies || (storedBaby ? [storedBaby] : []);
+  const family = raw?.family || applicationData?.family || {
     id: FAMILY_ID,
     name: 'Família MilkFlow',
-    ownerId: 'usr_641306',
-    createdAt: '2026-07-28T14:05:38.498Z',
-    babyIds: data?.babies?.map((b: any) => b.id) || [],
+    ownerId: 'usr_milkflow_owner',
+    createdAt: new Date().toISOString(),
+    babyIds: babies.map((b: any) => b.id),
     pairingCode: FAMILY_CODE,
   };
-  const babies = data?.babies || (data?.baby ? [data.baby] : []);
+  // Force the canonical existing family id so every subsequent sync hits the same row.
+  family.id = FAMILY_ID;
+  family.pairingCode = family.pairingCode || FAMILY_CODE;
+
   const user = {
-    id: caregiverName === 'Diogo Brasileiro' ? 'usr_641306' : `usr_pages_${Date.now()}`,
-    email: caregiverName === 'Diogo Brasileiro' ? 'diogobrasileirofotografia@gmail.com' : `${caregiverName.toLowerCase().replace(/\W+/g, '.')}@milkflow.local`,
+    id: family.ownerId || 'usr_milkflow_owner',
+    email: 'diogobrasileirofotografia@gmail.com',
     name: caregiverName,
     avatarColor: '#3b82f6',
-    role: caregiverName === 'Diogo Brasileiro' ? 'OWNER' : 'CAREGIVER',
+    role: 'OWNER',
     currentFamilyId: FAMILY_ID,
-    createdAt: new Date().toISOString(),
+    createdAt: family.createdAt || new Date().toISOString(),
     emailVerified: true,
   };
-  return { success: true, user, family, babies, familyData: data?.familyData || data };
+
+  return { success: true, user, family, babies, familyData: applicationData };
 }
 
 window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-  const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-  const url = new URL(raw, window.location.origin);
+  const rawUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  const url = new URL(rawUrl, window.location.origin);
   if (!url.pathname.startsWith('/api/')) return nativeFetch(input, init);
 
   try {
     if (url.pathname === '/api/health') {
-      return json({ status: 'ok', hosting: 'github-pages', supabase: { url: SUPABASE_URL } });
+      return json({ status: 'ok', hosting: 'github-pages', supabase: { url: SUPABASE_URL }, familyId: FAMILY_ID });
     }
 
     if (url.pathname === '/api/supabase/status') {
@@ -92,35 +105,38 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
 
     if (url.pathname === '/api/auth/sync-session' && (init?.method || 'GET').toUpperCase() === 'POST') {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
-      const familyId = body.family?.id || FAMILY_ID;
-      const cloud = await readFamilyData(familyId).catch(() => null);
-      // Never replace an existing cloud snapshot with an empty local snapshot.
-      if (!cloud && body.familyData && Object.keys(body.familyData).length > 0) {
-        await writeFamilyData(familyId, { ...body.familyData, family: body.family, babies: body.babies });
-      }
-      const current = (await readFamilyData(familyId).catch(() => null)) || body.familyData || {};
-      return json({ ...familyEnvelope(current, body.user?.name || 'Diogo Brasileiro'), family: body.family || familyEnvelope(current).family, babies: body.babies?.length ? body.babies : familyEnvelope(current).babies });
+      // Always pull the canonical existing family. Never let a stale browser session redirect
+      // the app to fam_641306 or create another family row.
+      const cloud = await readFamilyData();
+      const env = familyEnvelope(cloud, body.user?.name || 'Diogo Brasileiro');
+      return json(env);
     }
 
     const familyMatch = url.pathname.match(/^\/api\/family\/([^/]+)\/sync$/);
     if (familyMatch) {
-      const familyId = decodeURIComponent(familyMatch[1]);
+      // Regardless of stale family id in localStorage, use the canonical existing Supabase row.
       if ((init?.method || 'GET').toUpperCase() === 'GET') {
-        const data = await readFamilyData(familyId);
+        const data = await readFamilyData();
         const env = familyEnvelope(data);
         return json({ success: true, family: env.family, babies: env.babies, familyData: env.familyData, serverTime: new Date().toISOString(), supabaseActive: true });
       }
       if ((init?.method || 'GET').toUpperCase() === 'POST') {
         const body = init?.body ? JSON.parse(String(init.body)) : {};
-        const existing = (await readFamilyData(familyId).catch(() => null)) || {};
-        const next = { ...existing, ...(body.data || {}), family: body.family || existing.family, babies: body.babies || existing.babies };
-        await writeFamilyData(familyId, next);
-        return json({ success: true, family: next.family, babies: next.babies, familyData: next, serverTime: new Date().toISOString(), supabaseSynced: true });
+        const existingRaw = (await readFamilyData().catch(() => null)) || {};
+        const { applicationData: existingData } = normalizeStoredData(existingRaw);
+        const nextData = { ...existingData, ...(body.data || {}) };
+        // Preserve the storage envelope when one already exists.
+        const nextRaw = existingRaw?.data !== undefined
+          ? { ...existingRaw, data: nextData, family: body.family || existingRaw.family, babies: body.babies || existingRaw.babies }
+          : existingRaw?.familyData !== undefined
+          ? { ...existingRaw, familyData: nextData, family: body.family || existingRaw.family, babies: body.babies || existingRaw.babies }
+          : { ...nextData, family: body.family || existingRaw.family, babies: body.babies || existingRaw.babies };
+        await writeFamilyData(FAMILY_ID, nextRaw);
+        const env = familyEnvelope(nextRaw);
+        return json({ success: true, family: env.family, babies: env.babies, familyData: env.familyData, serverTime: new Date().toISOString(), supabaseSynced: true });
       }
     }
 
-    // Let existing AuthContext use its local/offline fallbacks for endpoints that
-    // require the old Node credential store (email signup/login/reset).
     return json({ success: false, error: 'Função disponível apenas no modo local/Supabase desta versão.' }, 503);
   } catch (error: any) {
     console.error('GitHub Pages Supabase bridge error', error);
