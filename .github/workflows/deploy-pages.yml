@@ -35,7 +35,29 @@ jobs:
       - name: TypeScript verification
         run: bun run lint
 
-      - name: Build static frontend
+      - name: Build Supabase cloud edition (PR smoke test)
+        if: github.event_name == 'pull_request'
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci_mock_key_not_valid
+        run: bun run build:pages
+
+      - name: Require production public variables before deployment
+        if: github.event_name != 'pull_request'
+        env:
+          VITE_SUPABASE_URL: ${{ vars.MILK_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.MILK_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL" || (echo "MILK_SUPABASE_URL missing in GitHub Actions Variables" && exit 1)
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY" || (echo "MILK_SUPABASE_PUBLISHABLE_KEY missing in GitHub Actions Variables" && exit 1)
+          case "$VITE_SUPABASE_URL" in https://*.supabase.co) ;; *) echo "Invalid Supabase project URL"; exit 1;; esac
+          case "$VITE_SUPABASE_PUBLISHABLE_KEY" in sb_publishable_*) ;; *) echo "Expected public Supabase publishable key"; exit 1;; esac
+
+      - name: Build production cloud edition
+        if: github.event_name != 'pull_request'
+        env:
+          VITE_SUPABASE_URL: ${{ vars.MILK_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.MILK_SUPABASE_PUBLISHABLE_KEY }}
         run: bun run build:pages
 
       - name: Validate static artifact and personal-data isolation
@@ -46,10 +68,11 @@ jobs:
           test -f dist/manifest.json
           test -f dist/.nojekyll
           test ! -f data/milkflow_cloud_database.json
+          if grep -RIlF 'sb_secret_' dist >/dev/null; then echo 'Secret key must not be bundled'; exit 1; fi
+          if grep -RIlF 'service_role' dist >/dev/null; then echo 'Service role must not be bundled'; exit 1; fi
           failed=0
           if grep -RIlF 'fam_1786815802222_lu7tvw' dist >/dev/null; then echo 'Family identifier still included'; failed=1; fi
           if grep -RIlF '641306' dist >/dev/null; then echo 'Legacy pairing code still included'; failed=1; fi
-          if grep -RIlF 'poagmqrrbscemlqqccfe' dist >/dev/null; then echo 'Database reference still included'; failed=1; fi
           if grep -RIlF 'eyJhbGciOiJIUzI1Ni' dist >/dev/null; then echo 'JWT-like value still included'; failed=1; fi
           exit "$failed"
 
