@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { IS_STATIC_PAGES } from './lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from './lib/deployment';
+import { CloudAuthProvider } from './context/CloudAuthProvider';
+import { CloudAuthScreen } from './components/auth/CloudAuthScreen';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
@@ -87,7 +89,7 @@ const AppContent: React.FC = () => {
 
   // Not logged in -> Show Mobile-First Auth Screen
   if (!currentUser) {
-    return IS_STATIC_PAGES ? <LocalProfileStart /> : <AuthScreen />;
+    return IS_CLOUD_PAGES ? <CloudAuthScreen /> : IS_STATIC_PAGES ? <LocalProfileStart /> : <AuthScreen />;
   }
 
   // Logged in but no baby registered yet -> Fast Onboarding Step
@@ -160,11 +162,12 @@ const AppContent: React.FC = () => {
 };
 
 export default function App() {
+  const FamilyAuth = IS_CLOUD_PAGES ? CloudAuthProvider : AuthProvider;
   return (
-    <AuthProvider>
+    <FamilyAuth>
       <AppProvider>
         <AppContent />
       </AppProvider>
-    </AuthProvider>
+    </FamilyAuth>
   );
 }
