@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Milk, ShieldCheck, AlertCircle, RefreshCw, LogOut } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { getClientSupabase } from '../../lib/supabaseClient';
@@ -19,6 +19,16 @@ export const CloudAuthScreen: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const { data: { subscription } } = getClientSupabase().auth.onAuthStateChange(event => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setMode('new-password');
+        setInfo('Defina uma nova senha de acesso à sua conta.');
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -67,7 +77,7 @@ export const CloudAuthScreen: React.FC = () => {
           O histórico existente é mantido no Supabase. Acesso permitido somente após vinculação da conta à família autorizada.
         </div>
 
-        {cloudUserId ? (
+        {cloudUserId && mode !== 'new-password' ? (
           <section className="space-y-3 border border-amber-500/30 bg-amber-500/10 rounded-xl p-4">
             <h2 className="font-bold text-amber-100">Aguardando liberação da família</h2>
             <p className="text-sm text-amber-100">
