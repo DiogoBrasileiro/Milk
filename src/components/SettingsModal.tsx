@@ -1,3 +1,4 @@
+import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { CONSERVATION_PROTOCOLS } from '../constants/medicalProtocols';
@@ -252,9 +253,9 @@ export const SettingsModal: React.FC = () => {
           {/* Supabase Cloud Connection */}
           <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block">
-              Banco de Dados em Nuvem (Supabase)
+              {IS_STATIC_PAGES ? 'Armazenamento no navegador' : 'Banco de Dados em Nuvem (Supabase)'}
             </span>
-            <div className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between">
+            <div className={`p-3 rounded-2xl border flex items-center justify-between ${IS_STATIC_PAGES ? "bg-amber-500/10 border-amber-500/30" : "bg-slate-500/10 border-slate-500/30"}`}>
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-500 flex items-center justify-center">
                   <Cloud className="w-4 h-4" />
@@ -262,12 +263,12 @@ export const SettingsModal: React.FC = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
-                      Supabase Conectado
+                      {IS_STATIC_PAGES ? 'Modo local, sem nuvem' : 'Supabase configurável'}
                     </span>
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   </div>
                   <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 truncate max-w-[220px] sm:max-w-xs">
-                    poagmqrrbscemlqqccfe.supabase.co
+                    {IS_STATIC_PAGES ? 'Dados apenas neste dispositivo' : (SUPABASE_URL || 'Banco não configurado')}
                   </p>
                 </div>
               </div>

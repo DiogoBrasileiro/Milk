@@ -1,3 +1,4 @@
+import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
@@ -272,7 +273,11 @@ export const Header: React.FC = () => {
             <span className="font-bold hidden sm:inline">Início</span>
           </button>
 
-          {/* Cloud Multi-Device Live Real-Time Sync Indicator */}
+          {IS_STATIC_PAGES ? (
+            <span title="Dados disponíveis apenas neste navegador, sem sincronização" className="flex items-center gap-1 rounded-xl bg-amber-100 text-amber-900 px-2.5 py-2 text-xs font-bold">
+              <CloudOff className="w-4 h-4" /> Local
+            </span>
+          ) : (
           <button
             type="button"
             onClick={handleManualSync}
@@ -315,6 +320,7 @@ export const Header: React.FC = () => {
               </>
             )}
           </button>
+          )}
 
           {/* Night Mode Toggle */}
           <button
@@ -386,6 +392,8 @@ export const Header: React.FC = () => {
                     <span>Ir para o Dashboard (Início)</span>
                   </button>
 
+                  {!IS_STATIC_PAGES && (
+                    <>
                   <button
                     type="button"
                     onClick={() => {
@@ -416,6 +424,9 @@ export const Header: React.FC = () => {
                     </div>
                     <span className="text-[10px] text-slate-400">Multi-aparelho</span>
                   </button>
+
+                    </>
+                  )}
 
                   <button
                     type="button"
@@ -497,7 +508,7 @@ export const Header: React.FC = () => {
       </div>
 
       {/* MODAL: Conectar Outro Celular / Pairing Code Guide */}
-      {showPairingModal && (
+      {showPairingModal && !IS_STATIC_PAGES && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
           <div
             className={`w-full max-w-md rounded-3xl p-6 shadow-2xl border ${

@@ -1,16 +1,19 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const metaEnv = (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
+import { IS_STATIC_PAGES } from './deployment';
 
-export const SUPABASE_URL: string =
-  metaEnv.VITE_SUPABASE_URL || 'https://poagmqrrbscemlqqccfe.supabase.co';
-export const SUPABASE_ANON_KEY: string =
-  metaEnv.VITE_SUPABASE_ANON_KEY ||
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvYWdtcXJyYnNjZW1scXFjY2ZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTEwODEsImV4cCI6MjEwMjU2NzA4MX0.BWmvH8WLYVkWoi-pCZcM-cPdvt9s5DzuUR2gGkE6E90';
+const metaEnv = import.meta.env;
+
+// Never embed database endpoints and keys in a publicly compiled Pages bundle.
+export const SUPABASE_URL: string = metaEnv.VITE_SUPABASE_URL || '';
+export const SUPABASE_ANON_KEY: string = metaEnv.VITE_SUPABASE_ANON_KEY || '';
 
 let supabaseClient: SupabaseClient | null = null;
 
 export function getClientSupabase(): SupabaseClient {
+  if (IS_STATIC_PAGES || !SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Supabase indisponível neste modo de execução.');
+  }
   if (!supabaseClient) {
     supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
@@ -38,6 +41,9 @@ export interface SupabaseStatus {
  * Consulta a saúde da conexão do Supabase via backend seguro
  */
 export async function checkSupabaseStatus(): Promise<SupabaseStatus> {
+  if (IS_STATIC_PAGES) {
+    return {connected:false,projectUrl:'',latencyMs:0,message:'Modo local: sem sincronização com Supabase.',testedAt:new Date().toISOString()};
+  }
   try {
     const res = await fetch('/api/supabase/status');
     if (res.ok) {
@@ -59,6 +65,7 @@ export async function checkSupabaseStatus(): Promise<SupabaseStatus> {
  * Salva diretamente no Supabase a partir do cliente (camada de redundância em tempo real)
  */
 export async function directSaveFamilyToSupabase(familyId: string, familyData: any): Promise<boolean> {
+  if (IS_STATIC_PAGES) return false;
   try {
     const client = getClientSupabase();
     const { error } = await client
@@ -91,6 +98,7 @@ export async function directSaveFamilyToSupabase(familyId: string, familyData: a
  * Lê diretamente do Supabase
  */
 export async function directLoadFamilyFromSupabase(familyId: string): Promise<any | null> {
+  if (IS_STATIC_PAGES) return null;
   try {
     const client = getClientSupabase();
     const { data, error } = await client
@@ -115,6 +123,7 @@ export function subscribeToFamilyInSupabase(
   familyId: string,
   onUpdate: (payload: any) => void
 ): () => void {
+  if (IS_STATIC_PAGES) return () => {};
   try {
     const client = getClientSupabase();
     const channel = client

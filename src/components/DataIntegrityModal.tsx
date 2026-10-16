@@ -89,7 +89,7 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
   const handleSyncToSupabase = async () => {
     setIsSyncingSupabase(true);
     try {
-      const famId = currentFamily?.id || 'fam_641306';
+      const famId = currentFamily?.id || 'local-unassigned-family';
       const res = await fetch(`/api/supabase/sync/${famId}`, {
         method: 'POST',
       });

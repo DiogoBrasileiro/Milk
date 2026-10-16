@@ -3,10 +3,10 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
   return {
-    // GitHub Pages project URL: /Milk/
-    base: '/Milk/',
+    // Deploy GitHub Pages under /Milk/; other hosts serve from /.
+    base: mode === 'pages' ? '/Milk/' : '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
