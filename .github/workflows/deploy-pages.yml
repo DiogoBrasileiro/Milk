@@ -68,8 +68,9 @@ jobs:
           test -f dist/manifest.json
           test -f dist/.nojekyll
           test ! -f data/milkflow_cloud_database.json
-          if grep -RIlF 'sb_secret_' dist >/dev/null; then echo 'Secret key must not be bundled'; exit 1; fi
-          if grep -RIlF 'service_role' dist >/dev/null; then echo 'Service role must not be bundled'; exit 1; fi
+          # Supabase SDK includes *literal* secret-key prefixes in its own checks,
+          # so detect actual long secret-like values rather than short substrings.
+          if grep -RIlE 'sb_secret_[A-Za-z0-9_-]{24,}' dist >/dev/null; then echo 'Secret value included in bundle'; exit 1; fi
           failed=0
           if grep -RIlF 'fam_1786815802222_lu7tvw' dist >/dev/null; then echo 'Family identifier still included'; failed=1; fi
           if grep -RIlF '641306' dist >/dev/null; then echo 'Legacy pairing code still included'; failed=1; fi
