@@ -1,4 +1,4 @@
-import { IS_STATIC_PAGES } from '../lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from '../lib/deployment';
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import {
@@ -263,11 +263,12 @@ export function harvestAndMergeAllUserData(activeFamilyId?: string) {
     return merged;
   }
 
-  // Read specifically from current family or guest key
+  // In the authenticated edition never read a different family's local cache.
+  if (IS_CLOUD_PAGES && !activeFamilyId) return merged;
   const familyKey = activeFamilyId ? `milkflow_family_data_${activeFamilyId}` : 'milkflow_guest_data';
   let raw = localStorage.getItem(familyKey);
 
-  if (!raw || !raw.trim().startsWith('{')) {
+  if (!IS_CLOUD_PAGES && (!raw || !raw.trim().startsWith('{'))) {
     raw = localStorage.getItem('milkflow_universal_backup');
   }
 
@@ -550,9 +551,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     lastLocalMutationTime.current = Date.now();
 
     try {
-      localStorage.setItem(familyStorageKey, JSON.stringify(dataToSave));
-      localStorage.setItem('milkflow_universal_backup', JSON.stringify(dataToSave));
-      localStorage.setItem('milkflow_guest_data', JSON.stringify(dataToSave));
+      if (!IS_CLOUD_PAGES || currentFamily?.id) {
+        localStorage.setItem(familyStorageKey, JSON.stringify(dataToSave));
+      }
+      if (!IS_CLOUD_PAGES) {
+        localStorage.setItem('milkflow_universal_backup', JSON.stringify(dataToSave));
+        localStorage.setItem('milkflow_guest_data', JSON.stringify(dataToSave));
+      }
     } catch (e) {
       console.error('Error saving family data to localStorage', e);
     }
@@ -769,7 +774,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Multi-device Cloud Sync State
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>(IS_STATIC_PAGES ? 'offline' : 'synced');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>(IS_STATIC_PAGES || IS_CLOUD_PAGES ? 'offline' : 'synced');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
 
   // Authoritative State Applier from Cloud / Live Stream - NEVER DESTROYS RECORDS
@@ -784,6 +789,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     if (!d) return;
+
+    if (IS_CLOUD_PAGES && d.baby?.id) {
+      const incomingAt = getModificationTimestamp(d.baby);
+      const localAt = getModificationTimestamp(babyRef.current);
+      if (incomingAt >= localAt || !localBaby?.id) {
+        const updated = { ...babyRef.current, ...d.baby };
+        babyRef.current = updated;
+        setLocalBaby(updated);
+        updateBabyProfile(updated.id, updated);
+      }
+    }
 
     // Consolidate deleted IDs from incoming payload
     if (d.deletedItemIds && typeof d.deletedItemIds === 'object') {
@@ -979,9 +995,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     try {
-      localStorage.setItem(familyStorageKey, JSON.stringify(unifiedSnapshot));
-      localStorage.setItem('milkflow_universal_backup', JSON.stringify(unifiedSnapshot));
-      localStorage.setItem('milkflow_guest_data', JSON.stringify(unifiedSnapshot));
+      if (!IS_CLOUD_PAGES || currentFamily?.id) {
+        localStorage.setItem(familyStorageKey, JSON.stringify({ ...unifiedSnapshot, baby: babyRef.current }));
+      }
+      if (!IS_CLOUD_PAGES) {
+        localStorage.setItem('milkflow_universal_backup', JSON.stringify(unifiedSnapshot));
+        localStorage.setItem('milkflow_guest_data', JSON.stringify(unifiedSnapshot));
+      }
     } catch (e) {
       console.warn('Error caching synced family data locally', e);
     }
@@ -993,6 +1013,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const restoreAllHistoricalData = (): boolean => {
+    if (IS_CLOUD_PAGES) {
+      window.alert('Para evitar conflitos, a recuperação da versão em nuvem deve ser homologada com backup e comparação do Supabase.');
+      return false;
+    }
     const harvested = harvestAndMergeAllUserData(currentFamily?.id);
     setBatches(harvested.batches);
     batchesRef.current = harvested.batches;
@@ -1036,6 +1060,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Function to pull latest data from cloud (for multi-device sync)
   const pullFromCloud = async (familyId: string) => {
     if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
+    if (IS_CLOUD_PAGES) {
+      if (!currentUser || !navigator.onLine) { setCloudSyncStatus('offline'); return; }
+      setCloudSyncStatus('syncing');
+      const raw = await directLoadFamilyFromSupabase(familyId);
+      if (!raw) { setCloudSyncStatus('error'); return; }
+      applyIncomingFamilyData(raw.data || raw.familyData || raw, raw.babies, raw.family);
+      setCloudSyncStatus('synced');
+      return;
+    }
     if (!navigator.onLine) {
       setCloudSyncStatus('offline');
       return;
@@ -1094,6 +1127,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch (_) {}
 
     if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
+    if (IS_CLOUD_PAGES) {
+      if (!currentUser || !navigator.onLine) { setCloudSyncStatus('offline'); return; }
+      setCloudSyncStatus('syncing');
+      const success = await directSaveFamilyToSupabase(familyId, {
+        familyId,
+        family: currentFamily,
+        babies,
+        data: enrichedPayload,
+      });
+      if (!success) { setCloudSyncStatus('error'); return; }
+      setCloudSyncStatus('synced');
+      setLastCloudSyncTime(new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}));
+      return;
+    }
     if (!navigator.onLine) {
       setCloudSyncStatus('offline');
       return;
@@ -1143,6 +1190,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // 0. Immediately re-harvest and hydrate all local data when family or user changes
     const localHarvested = harvestAndMergeAllUserData(currentFamily?.id);
     applyIncomingFamilyData(localHarvested);
+
+    if (IS_CLOUD_PAGES) {
+      if (!currentUser?.id || !currentFamily?.id) return;
+      const familyId = currentFamily.id;
+      void pullFromCloud(familyId);
+      const unsubscribe = subscribeToFamilyInSupabase(familyId, raw => {
+        applyIncomingFamilyData(raw.data || raw.familyData || raw, raw.babies, raw.family);
+      });
+      const channel = typeof BroadcastChannel !== 'undefined'
+        ? new BroadcastChannel('milkflow_sync_' + familyId) : null;
+      if (channel) {
+        channel.onmessage = ev => {
+          if (ev.data?.familyData) applyIncomingFamilyData(ev.data.familyData, ev.data.babies, ev.data.family);
+        };
+      }
+      // Realtime may be disabled on the project. Use a moderate fallback,
+      // not the legacy 3-second polling loop.
+      const poll = window.setInterval(() => {
+        if (document.visibilityState === 'visible' && navigator.onLine) void pullFromCloud(familyId);
+      }, 30000);
+      const onFocus = () => { if (navigator.onLine) void pullFromCloud(familyId); };
+      window.addEventListener('focus', onFocus);
+      return () => {
+        unsubscribe();
+        channel?.close();
+        window.clearInterval(poll);
+        window.removeEventListener('focus', onFocus);
+      };
+    }
 
     if (IS_STATIC_PAGES) {
       // Pages has no trusted backend. Synchronize open tabs, but never remote devices.
@@ -1271,7 +1347,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       window.removeEventListener('visibilitychange', onFocusOrVisible);
       window.removeEventListener('online', onFocusOrVisible);
     };
-  }, [currentFamily?.id]);
+  }, [currentFamily?.id, currentUser?.id]);
 
   const toggleNightMode = () => {
     setIsNightMode((prev) => {
@@ -3353,6 +3429,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const importDataJson = (jsonStr: string): boolean => {
+    if (IS_CLOUD_PAGES) {
+      window.alert('Importação direta bloqueada para proteger o banco original. A migração deve comparar registros antes de escrever.');
+      return false;
+    }
     try {
       const data = JSON.parse(jsonStr);
       if (data.batches) setBatches(data.batches);
