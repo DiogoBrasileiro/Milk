@@ -46,10 +46,12 @@ jobs:
           test -f dist/manifest.json
           test -f dist/.nojekyll
           test ! -f data/milkflow_cloud_database.json
-          if grep -RIlE 'fam_1786815802222_lu7tvw|641306|poagmqrrbscemlqqccfe|eyJhbGciOiJIUzI1Ni' dist; then
-            echo 'Built site contains old family identifiers or embedded database keys'
-            exit 1
-          fi
+          failed=0
+          if grep -RIlF 'fam_1786815802222_lu7tvw' dist >/dev/null; then echo 'Family identifier still included'; failed=1; fi
+          if grep -RIlF '641306' dist >/dev/null; then echo 'Legacy pairing code still included'; failed=1; fi
+          if grep -RIlF 'poagmqrrbscemlqqccfe' dist >/dev/null; then echo 'Database reference still included'; failed=1; fi
+          if grep -RIlF 'eyJhbGciOiJIUzI1Ni' dist >/dev/null; then echo 'JWT-like value still included'; failed=1; fi
+          exit "$failed"
 
       - name: Configure GitHub Pages
         if: github.event_name != 'pull_request'
