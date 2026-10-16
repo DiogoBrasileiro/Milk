@@ -31,7 +31,7 @@ FROM public.milkflow_store;
 
 -- Read/write access is now only for logged-in members. No anon access.
 ALTER TABLE public.milkflow_store ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON TABLE public.milkflow_store FROM anon, authenticated;
+REVOKE ALL ON TABLE public.milkflow_store FROM PUBLIC, anon, authenticated;
 GRANT SELECT, UPDATE ON TABLE public.milkflow_store TO authenticated;
 
 -- Existing broad policies cannot safely coexist with member-specific access.
