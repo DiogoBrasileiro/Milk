@@ -1,4 +1,4 @@
-import { IS_STATIC_PAGES } from '../lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from '../lib/deployment';
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { CONSERVATION_PROTOCOLS } from '../constants/medicalProtocols';
@@ -19,6 +19,7 @@ export const SettingsModal: React.FC = () => {
     updateBaby,
     exportDataJson,
     importDataJson,
+    cloudSyncStatus,
   } = useApp();
 
   const [newCaregiverName, setNewCaregiverName] = useState('');
@@ -263,7 +264,7 @@ export const SettingsModal: React.FC = () => {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
-                      {IS_STATIC_PAGES ? 'Modo local, sem nuvem' : 'Supabase configurável'}
+                      {IS_STATIC_PAGES ? 'Modo local, sem nuvem' : IS_CLOUD_PAGES ? (cloudSyncStatus === 'synced' ? 'Sincronização confirmada' : 'Sincronização não confirmada') : 'Supabase configurável'}
                     </span>
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   </div>
