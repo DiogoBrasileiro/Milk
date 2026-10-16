@@ -1,3 +1,4 @@
+import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
@@ -64,7 +65,7 @@ export const FamilyGroupModal: React.FC<FamilyGroupModalProps> = ({ onClose }) =
   const [role, setRole] = useState<CaregiverRole>('cuidador');
   const [avatarColor, setAvatarColor] = useState(PRESET_COLORS[0]);
 
-  const pairingCode = currentFamily?.pairingCode || '641306';
+  const pairingCode = currentFamily?.pairingCode || '';
 
   const handleCopyCode = () => {
     if (navigator.clipboard && pairingCode) {
@@ -196,11 +197,13 @@ export const FamilyGroupModal: React.FC<FamilyGroupModalProps> = ({ onClose }) =
               )}
 
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-white uppercase tracking-wider">
-                Multi-Aparelho
+                {IS_STATIC_PAGES ? 'Somente neste navegador' : 'Multi-Aparelho'}
               </span>
             </div>
 
-            <div className="p-3 rounded-xl bg-black/20 backdrop-blur-sm flex items-center justify-between gap-3">
+            {!IS_STATIC_PAGES && (
+                <>
+                <div className="p-3 rounded-xl bg-black/20 backdrop-blur-sm flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-blue-200 shrink-0" />
                 <div>
@@ -223,6 +226,8 @@ export const FamilyGroupModal: React.FC<FamilyGroupModalProps> = ({ onClose }) =
             <p className="text-[11px] text-white/80">
               Digite este código em outros celulares ou tablets para que pai, mãe e babá acessem tudo em tempo real.
             </p>
+                </>
+              )}
           </div>
 
           {/* 2. FORM TO ADD / EDIT CAREGIVER */}
