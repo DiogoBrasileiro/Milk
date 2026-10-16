@@ -1,3 +1,4 @@
+import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import {
@@ -768,7 +769,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Multi-device Cloud Sync State
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('synced');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>(IS_STATIC_PAGES ? 'offline' : 'synced');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
 
   // Authoritative State Applier from Cloud / Live Stream - NEVER DESTROYS RECORDS
@@ -1034,6 +1035,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Function to pull latest data from cloud (for multi-device sync)
   const pullFromCloud = async (familyId: string) => {
+    if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
     if (!navigator.onLine) {
       setCloudSyncStatus('offline');
       return;
@@ -1091,6 +1093,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     } catch (_) {}
 
+    if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
     if (!navigator.onLine) {
       setCloudSyncStatus('offline');
       return;
@@ -1140,6 +1143,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // 0. Immediately re-harvest and hydrate all local data when family or user changes
     const localHarvested = harvestAndMergeAllUserData(currentFamily?.id);
     applyIncomingFamilyData(localHarvested);
+
+    if (IS_STATIC_PAGES) {
+      // Pages has no trusted backend. Synchronize open tabs, but never remote devices.
+      if (!currentFamily?.id || typeof BroadcastChannel === 'undefined') return;
+      const channel = new BroadcastChannel('milkflow_sync_' + currentFamily.id);
+      channel.onmessage = (event) => {
+        if (event.data?.familyData) {
+          applyIncomingFamilyData(event.data.familyData, event.data.babies, event.data.family, event.data.members);
+        } else if (event.data?.babies || event.data?.family || event.data?.members) {
+          syncIncomingFamilyState?.(event.data.babies, event.data.family, event.data.members);
+        }
+      };
+      return () => channel.close();
+    }
 
     if (!currentFamily?.id) return;
 
