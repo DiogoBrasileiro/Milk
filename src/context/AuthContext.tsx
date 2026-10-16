@@ -1,3 +1,4 @@
+import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthUser, Family, FamilyMember, BabyProfile, UserRole } from '../types';
 
@@ -11,6 +12,7 @@ interface AuthContextType {
   setActiveBabyId: (babyId: string) => void;
   isLoading: boolean;
   isOnboarding: boolean;
+  startLocalProfile: (name?: string) => void;
   signUpWithEmail: (name: string, email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   signInWithEmail: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   signInWithFamilyCode: (code: string, caregiverName?: string) => Promise<{ success: boolean; error?: string }>;
@@ -68,6 +70,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               if (localFamilyData) parsedData = JSON.parse(localFamilyData);
             } catch (_) {}
 
+            if (!IS_STATIC_PAGES) {
             fetch('/api/auth/sync-session', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -126,49 +129,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 }
               })
               .catch((e) => console.warn('Background session sync to cloud warning', e));
+            }
             return;
           }
         }
 
-        // If no local session exists, automatically load account 641306 seamlessly
-        try {
-          const res = await fetch('/api/auth/login-code', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: '641306', caregiverName: 'Diogo Brasileiro' }),
-          });
-          const data = await res.json();
-          if (data && data.success) {
-            const user: AuthUser = data.user;
-            const family: Family = data.family;
-            const babyList: BabyProfile[] = data.babies || [];
-            const firstBabyId = babyList[0]?.id || null;
-            const members: FamilyMember[] = [
-              {
-                userId: user.id,
-                familyId: family.id,
-                email: user.email,
-                name: user.name,
-                role: 'OWNER',
-                avatarColor: user.avatarColor,
-                joinedAt: user.createdAt,
-              },
-            ];
-            if (data.familyData) {
-              localStorage.setItem(`milkflow_family_data_${family.id}`, JSON.stringify(data.familyData));
-              localStorage.setItem('milkflow_universal_backup', JSON.stringify(data.familyData));
-              localStorage.setItem('milkflow_guest_data', JSON.stringify(data.familyData));
-            }
-            setCurrentUser(user);
-            setCurrentFamily(family);
-            setFamilyMembers(members);
-            setBabies(babyList);
-            setActiveBabyIdState(firstBabyId);
-            persistSession(user, family, members, babyList, firstBabyId);
-          }
-        } catch (err) {
-          console.warn('Could not auto-login code 641306', err);
-        }
+        // No automatic account login: each device must explicitly start a profile.
       } catch (e) {
         console.error('Error restoring session', e);
       } finally {
@@ -214,6 +180,48 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (err) {
       console.error('Error saving user db', err);
     }
+  };
+
+
+  // An offline profile is not a remotely authenticated account.
+  const startLocalProfile = (name?: string) => {
+    const email = 'local@milkflow.invalid';
+    try {
+      const accounts = JSON.parse(localStorage.getItem(USERS_STORAGE_KEY) || '{}');
+      const previous = accounts[email];
+      if (previous?.user && previous?.family) {
+        const savedBabies: BabyProfile[] = previous.babies || [];
+        setCurrentUser(previous.user);
+        setCurrentFamily(previous.family);
+        setFamilyMembers(previous.members || []);
+        setBabies(savedBabies);
+        setActiveBabyIdState(savedBabies[0]?.id || null);
+        persistSession(previous.user, previous.family, previous.members || [], savedBabies, savedBabies[0]?.id || null);
+        return;
+      }
+    } catch (error) { console.warn('Local profile recovery notice', error); }
+    const safeName = name?.trim() || 'Cuidador(a)';
+    const suffix = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+    const userId = 'usr_local_' + suffix, familyId = 'fam_local_' + suffix;
+    const createdAt = new Date().toISOString();
+    const user: AuthUser = {
+      id: userId, email, name: safeName, avatarColor: '#2563eb',
+      role: 'OWNER', currentFamilyId: familyId, createdAt, emailVerified: false,
+    };
+    const family: Family = {
+      id: familyId, name: 'Família de ' + safeName.split(' ')[0],
+      ownerId: userId, createdAt, babyIds: [],
+    };
+    const members: FamilyMember[] = [{
+      userId, familyId, email, name: safeName, role: 'OWNER',
+      avatarColor: user.avatarColor, joinedAt: createdAt,
+    }];
+    setCurrentUser(user);
+    setCurrentFamily(family);
+    setFamilyMembers(members);
+    setBabies([]);
+    setActiveBabyIdState(null);
+    persistSession(user, family, members, [], null);
   };
 
   const signUpWithEmail = async (name: string, email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
@@ -741,6 +749,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setActiveBabyId,
         isLoading,
         isOnboarding,
+        startLocalProfile,
         signUpWithEmail,
         signInWithEmail,
         signInWithFamilyCode,
