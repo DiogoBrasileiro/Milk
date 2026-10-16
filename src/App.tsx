@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { IS_STATIC_PAGES } from './lib/deployment';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
@@ -35,6 +36,40 @@ import { EditPumpingModal } from './components/EditPumpingModal';
 import { MedicationTrackerModal } from './components/medications/MedicationTrackerModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
+
+const LocalProfileStart: React.FC = () => {
+  const { startLocalProfile } = useAuth();
+  const [name, setName] = useState('');
+  return (
+    <main className="min-h-screen bg-[#080b10] text-slate-100 flex items-center justify-center p-5">
+      <form onSubmit={(event) => { event.preventDefault(); startLocalProfile(name); }}
+        className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-3xl p-6 sm:p-8 space-y-5 shadow-xl">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-bold">MilkFlow Baby</h1>
+          <p className="text-sm text-slate-300">Versão local do GitHub Pages</p>
+        </div>
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm leading-relaxed text-amber-100">
+          Os registros ficam somente neste navegador. Não há conta online,
+          sincronização entre aparelhos ou recuperação automática. Evite
+          dispositivos compartilhados e exporte backups regularmente.
+        </div>
+        <label className="block space-y-2">
+          <span className="text-sm font-semibold">Como deseja ser chamado(a)?</span>
+          <input className="w-full rounded-xl bg-slate-800 border border-slate-600 p-3 outline-none focus:border-blue-400"
+            value={name} onChange={(event) => setName(event.target.value)}
+            placeholder="Ex.: Mãe, Pai ou Cuidador(a)" maxLength={60} />
+        </label>
+        <button type="submit" className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-3 font-bold">
+          Começar neste dispositivo
+        </button>
+        <p className="text-xs text-slate-400">
+          Esta edição não importa automaticamente os dados da versão do Google AI Studio.
+        </p>
+      </form>
+    </main>
+  );
+};
+
 const AppContent: React.FC = () => {
   const { currentUser, isOnboarding, isLoading } = useAuth();
   const { activeTab, activeModal, modalData, closeModal, isNightMode, undoToast, clearUndoToast } = useApp();
@@ -52,7 +87,7 @@ const AppContent: React.FC = () => {
 
   // Not logged in -> Show Mobile-First Auth Screen
   if (!currentUser) {
-    return <AuthScreen />;
+    return IS_STATIC_PAGES ? <LocalProfileStart /> : <AuthScreen />;
   }
 
   // Logged in but no baby registered yet -> Fast Onboarding Step
@@ -66,6 +101,12 @@ const AppContent: React.FC = () => {
         isNightMode ? 'bg-[#080b10] text-slate-100 dark' : 'bg-slate-50/70 text-slate-900'
       }`}
     >
+      {IS_STATIC_PAGES && (
+        <div role="status" className="w-full bg-amber-100 text-amber-950 px-3 py-2 text-xs text-center">
+          <strong>Modo local:</strong> os registros ficam apenas neste navegador, sem sincronização entre dispositivos.
+          Exporte backups periodicamente.
+        </div>
+      )}
       <Header />
 
       <main className="w-full">
