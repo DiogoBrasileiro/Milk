@@ -32,6 +32,11 @@ jobs:
       - name: Build static app
         run: bun run build:pages
 
+      - name: Check generated site
+        run: |
+          test -f dist/index.html
+          test -f dist/manifest.json
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
