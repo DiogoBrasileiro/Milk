@@ -1,4 +1,4 @@
-import { IS_STATIC_PAGES } from '../lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from '../lib/deployment';
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
@@ -197,11 +197,11 @@ export const FamilyGroupModal: React.FC<FamilyGroupModalProps> = ({ onClose }) =
               )}
 
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/20 text-white uppercase tracking-wider">
-                {IS_STATIC_PAGES ? 'Somente neste navegador' : 'Multi-Aparelho'}
+                {IS_CLOUD_PAGES ? 'Família autenticada' : IS_STATIC_PAGES ? 'Somente neste navegador' : 'Multi-Aparelho'}
               </span>
             </div>
 
-            {!IS_STATIC_PAGES && (
+            {!IS_STATIC_PAGES && !IS_CLOUD_PAGES && (
                 <>
                 <div className="p-3 rounded-xl bg-black/20 backdrop-blur-sm flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
