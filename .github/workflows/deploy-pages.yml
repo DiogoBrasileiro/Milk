@@ -35,6 +35,9 @@ jobs:
       - name: TypeScript verification
         run: bun run lint
 
+      - name: Verify legacy family snapshot handling
+        run: bun run test:cloud
+
       - name: Build Supabase cloud edition (PR smoke test)
         if: github.event_name == 'pull_request'
         env:
