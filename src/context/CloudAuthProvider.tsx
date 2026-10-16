@@ -2,6 +2,7 @@ import React, { ReactNode, useCallback, useEffect, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { AuthContext, AuthContextType } from './AuthContext';
 import { getClientSupabase } from '../lib/supabaseClient';
+import { normalizeCloudSnapshot } from '../lib/cloudSnapshot';
 import type { AuthUser, BabyProfile, Family, FamilyMember, UserRole } from '../types';
 
 type Membership = { family_id: string; role: UserRole; display_name: string | null };
@@ -18,29 +19,6 @@ function authUser(user: User, member: Membership): AuthUser {
     createdAt: user.created_at || new Date().toISOString(),
     emailVerified: Boolean(user.email_confirmed_at),
   };
-}
-
-function safeSnapshot(raw: any) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('O registro da família não contém um JSON válido.');
-  }
-  const app = raw.data || raw.familyData || raw;
-  if (!app || typeof app !== 'object' || Array.isArray(app)) {
-    throw new Error('O registro da família não contém os dados do aplicativo.');
-  }
-  const baseBabies: BabyProfile[] = Array.isArray(raw.babies) ? raw.babies
-    : Array.isArray(app.babies) ? app.babies : [];
-  const fromData: BabyProfile | undefined = app.baby?.id ? app.baby : undefined;
-  const babies = baseBabies.filter((b) => Boolean(b?.id));
-  if (fromData) {
-    const idx = babies.findIndex(b => b.id === fromData.id);
-    if (idx < 0) babies.unshift(fromData);
-    else babies[idx] = { ...babies[idx], ...fromData };
-  }
-  if (!babies.length) {
-    throw new Error('Nenhum perfil de bebê encontrado. A recuperação exige conferência do banco.');
-  }
-  return { app, babies, storedFamily: raw.family || app.family || {} };
 }
 
 export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -97,7 +75,7 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
         .eq('key', 'family_data_' + m.family_id)
         .single();
       if (recordError) throw recordError;
-      const { app, babies: babyList, storedFamily } = safeSnapshot(record?.value);
+      const { app, babies: babyList, storedFamily } = normalizeCloudSnapshot(record?.value);
       // The family_id from protected membership is canonical. Never use
       // the old 6-digit pairing code or a family ID typed by a visitor.
       const family: Family = {
