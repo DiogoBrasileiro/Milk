@@ -3,18 +3,17 @@ import { Milk, ShieldCheck, AlertCircle, RefreshCw, LogOut } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext';
 import { getClientSupabase } from '../../lib/supabaseClient';
 
-type Mode = 'login' | 'signup' | 'reset' | 'new-password';
+type Mode = 'login' | 'reset' | 'new-password';
 
 export const CloudAuthScreen: React.FC = () => {
   const {
-    signInWithEmail, signUpWithEmail, sendPasswordReset, signOutUser,
+    signInWithEmail, sendPasswordReset, signOutUser,
     cloudUserId, cloudAuthEmail, cloudAuthError, refreshCloudAccess,
   } = useAuth();
   const [mode, setMode] = useState<Mode>(
     window.location.hash.includes('type=recovery') ? 'new-password' : 'login'
   );
   const [email, setEmail] = useState('');
-  const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
@@ -50,9 +49,7 @@ export const CloudAuthScreen: React.FC = () => {
         else setInfo(result.message);
         return;
       }
-      const result = mode === 'signup'
-        ? await signUpWithEmail(name, email, password)
-        : await signInWithEmail(email, password);
+      const result = await signInWithEmail(email, password);
       if (!result.success) setError(result.error || 'Não foi possível autenticar.');
       else setInfo(result.message || 'Autenticação concluída.');
     } catch (e: any) {
@@ -69,12 +66,12 @@ export const CloudAuthScreen: React.FC = () => {
           <div className="rounded-2xl bg-blue-600 p-3"><Milk size={25} /></div>
           <div>
             <h1 className="text-xl font-extrabold">MilkFlow Baby</h1>
-            <p className="text-sm text-slate-400">Acesso familiar com Supabase</p>
+            <p className="text-sm text-slate-400">Seu histórico da família, em todos os dispositivos</p>
           </div>
         </div>
         <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-3 py-3 text-xs text-blue-100 flex items-start gap-2">
           <ShieldCheck size={18} className="shrink-0" />
-          O histórico existente é mantido no Supabase. Acesso permitido somente após vinculação da conta à família autorizada.
+          Entre com a conta já cadastrada no Supabase para acessar os registros existentes. Não é necessário cadastrar a Iza novamente.
         </div>
 
         {cloudUserId && mode !== 'new-password' ? (
@@ -98,20 +95,9 @@ export const CloudAuthScreen: React.FC = () => {
           </section>
         ) : (
           <>
-            <div className="flex gap-2 text-sm">
-              <button className={mode === 'login' ? 'flex-1 rounded-lg bg-blue-600 p-2 font-bold' : 'flex-1 rounded-lg bg-slate-800 p-2'}
-                onClick={() => { setMode('login'); setError(null); setInfo(null); }}>Entrar</button>
-              <button className={mode === 'signup' ? 'flex-1 rounded-lg bg-blue-600 p-2 font-bold' : 'flex-1 rounded-lg bg-slate-800 p-2'}
-                onClick={() => { setMode('signup'); setError(null); setInfo(null); }}>Criar conta</button>
-            </div>
+            <h2 className="text-lg font-bold">Entrar no MilkFlow</h2>
+            <p className="text-sm text-slate-400">Use seu e-mail e senha. Seus dados serão carregados do Supabase.</p>
             <form onSubmit={submit} className="space-y-3">
-              {mode === 'signup' && (
-                <label className="block space-y-1 text-sm">
-                  <span>Nome</span>
-                  <input className="w-full rounded-xl border border-slate-600 bg-slate-800 p-3"
-                    value={name} onChange={e => setName(e.target.value)} required maxLength={80} autoComplete="name"/>
-                </label>
-              )}
               {mode !== 'new-password' && (
                 <label className="block space-y-1 text-sm">
                   <span>E-mail</span>
@@ -133,7 +119,7 @@ export const CloudAuthScreen: React.FC = () => {
               {info && <p role="status" className="rounded-xl bg-green-950 p-3 text-sm text-green-100">{info}</p>}
               <button type="submit" disabled={busy}
                 className="w-full rounded-xl bg-blue-600 p-3 text-sm font-bold disabled:opacity-50">
-                {busy ? 'Aguarde...' : mode === 'login' ? 'Entrar com e-mail' : mode === 'signup' ? 'Criar conta familiar' :
+                {busy ? 'Aguarde...' : mode === 'login' ? 'Entrar e carregar meus dados' :
                   mode === 'reset' ? 'Enviar recuperação' : 'Salvar nova senha'}
               </button>
               <button type="button" onClick={() => { setMode(mode === 'reset' ? 'login' : 'reset'); setInfo(null); setError(null); }}
@@ -144,7 +130,7 @@ export const CloudAuthScreen: React.FC = () => {
           </>
         )}
         <p className="text-xs text-slate-500">
-          O antigo código numérico não é uma senha. Nenhum registro familiar é liberado sem associação autenticada no Supabase.
+          Já tem uma conta? Entre normalmente. Para adicionar outro cuidador, primeiro crie a conta no Supabase e vincule-a à família autorizada.
         </p>
       </div>
     </main>
