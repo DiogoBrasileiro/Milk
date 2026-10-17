@@ -41,3 +41,15 @@ O repo é público: nunca adicionar arquivos de backup familiar, tokens, emails,
 senhas ou chaves secretas ao Git. Há dados antigos removidos do HEAD mas ainda
 presentes no histórico; planejar limpeza e rotação de acessos em etapa separada.
 Não modificar o Cartório One.
+
+## Diagnóstico de acesso ao endereço
+
+Se a publicação em Actions passou mas a URL ainda redirecionar ou responder 404,
+confira `https://github.com/DiogoBrasileiro/Milk/settings/pages`:
+Source deve ser **GitHub Actions** e **Custom domain** não deve usar nenhum
+domínio do Cartório One. O endereço esperado é
+`https://diogobrasileiro.github.io/Milk/`.
+O domínio é configurado no painel Pages, não no arquivo CNAME do build.
+
+A verificação adicional de URL fica em
+`.github/workflows/verify-milk-pages.yml`.
