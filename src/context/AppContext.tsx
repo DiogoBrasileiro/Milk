@@ -1128,6 +1128,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
     if (IS_CLOUD_PAGES) {
+      // Initial production release is read-only. The write RPC is intentionally
+      // disabled in Supabase until concurrency and data-integrity tests pass.
+      // Never report a local-only change as synchronized.
+      setCloudSyncStatus('offline');
+      return;
+      /* Future validated write path:
       if (!currentUser || !navigator.onLine) { setCloudSyncStatus('offline'); return; }
       setCloudSyncStatus('syncing');
       const success = await directSaveFamilyToSupabase(familyId, {
@@ -1140,6 +1146,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCloudSyncStatus('synced');
       setLastCloudSyncTime(new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}));
       return;
+      */
     }
     if (!navigator.onLine) {
       setCloudSyncStatus('offline');
