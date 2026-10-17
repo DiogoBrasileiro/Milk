@@ -1,0 +1,35 @@
+name: Verify MilkFlow public URL
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/verify-milk-pages.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-public-url:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read public GitHub Pages metadata
+        shell: bash
+        run: |
+          curl -fLsS --max-time 20 \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/DiogoBrasileiro/Milk/pages \
+            -o "$RUNNER_TEMP/pages.json"
+          jq '{html_url, cname, status, build_type}' "$RUNNER_TEMP/pages.json"
+
+      - name: Check HTTP status and redirect of MilkFlow site
+        shell: bash
+        run: |
+          curl -sSIL --max-time 30 \
+            -D "$RUNNER_TEMP/pages-headers.txt" \
+            -o /dev/null \
+            https://diogobrasileiro.github.io/Milk/ || true
+          grep -iE '^(HTTP/|location:)' "$RUNNER_TEMP/pages-headers.txt" || true
+          curl -LsS --max-time 30 -o "$RUNNER_TEMP/site.html" \
+            -w 'HTTP=%{http_code}; final_url=%{url_effective}; redirects=%{num_redirects}\n' \
+            https://diogobrasileiro.github.io/Milk/ || true
