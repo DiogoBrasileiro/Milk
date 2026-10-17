@@ -83,13 +83,15 @@ CREATE OR REPLACE FUNCTION public.milkflow_merge_items(
 LANGUAGE sql IMMUTABLE SECURITY INVOKER SET search_path = ''
 AS $$
   WITH entries AS (
-    SELECT item, 0 AS source FROM pg_catalog.jsonb_array_elements(
+    SELECT old_entries.item AS item, 0 AS source
+    FROM pg_catalog.jsonb_array_elements(
       CASE WHEN jsonb_typeof(p_old) = 'array' THEN p_old ELSE '[]'::jsonb END
-    ) AS item
+    ) AS old_entries(item)
     UNION ALL
-    SELECT item, 1 AS source FROM pg_catalog.jsonb_array_elements(
+    SELECT new_entries.item AS item, 1 AS source
+    FROM pg_catalog.jsonb_array_elements(
       CASE WHEN jsonb_typeof(p_new) = 'array' THEN p_new ELSE '[]'::jsonb END
-    ) AS item
+    ) AS new_entries(item)
   ), latest AS (
     SELECT DISTINCT ON (item->>'id') item, item->>'id' AS item_id
     FROM entries
@@ -172,6 +174,32 @@ BEGIN
   v_merged := jsonb_set(v_merged,'{deletedItemIds}',v_deleted,true);
 
   FOREACH v_array_key IN ARRAY v_array_keys LOOP
+    -- Refuse ambiguous historical items instead of silently discarding them.
+    -- Never normalize or invent IDs during a live, destructive cutover.
+    IF EXISTS (
+      SELECT 1
+      FROM pg_catalog.jsonb_array_elements(
+        CASE WHEN jsonb_typeof(v_old_data->v_array_key) = 'array'
+          THEN v_old_data->v_array_key ELSE '[]'::jsonb END
+      ) AS original_item(item)
+      WHERE jsonb_typeof(original_item.item) <> 'object'
+        OR NOT (original_item.item ? 'id')
+    ) THEN
+      RAISE EXCEPTION 'Legacy entries without IDs in %, merge blocked', v_array_key
+        USING ERRCODE = '22023';
+    END IF;
+    IF EXISTS (
+      SELECT 1
+      FROM pg_catalog.jsonb_array_elements(
+        CASE WHEN jsonb_typeof(v_new_data->v_array_key) = 'array'
+          THEN v_new_data->v_array_key ELSE '[]'::jsonb END
+      ) AS incoming_item(item)
+      WHERE jsonb_typeof(incoming_item.item) <> 'object'
+        OR NOT (incoming_item.item ? 'id')
+    ) THEN
+      RAISE EXCEPTION 'Incoming entries without IDs in %, merge blocked', v_array_key
+        USING ERRCODE = '22023';
+    END IF;
     IF v_old_data ? v_array_key OR v_new_data ? v_array_key THEN
       v_merged := jsonb_set(
         v_merged,
