@@ -110,7 +110,7 @@ export const CloudAuthScreen: React.FC = () => {
                 <label className="block space-y-1 text-sm">
                   <span>{mode === 'new-password' ? 'Nova senha' : 'Senha'}</span>
                   <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                    minLength={8} required className="w-full rounded-xl border border-slate-600 bg-slate-800 p-3"
+                    minLength={mode === 'new-password' ? 8 : undefined} required className="w-full rounded-xl border border-slate-600 bg-slate-800 p-3"
                     value={password} onChange={e => setPassword(e.target.value)}/>
                 </label>
               )}
