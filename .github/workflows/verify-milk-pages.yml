@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Read public GitHub Pages metadata
+        continue-on-error: true
         shell: bash
         run: |
           curl -fLsS --max-time 20 \
