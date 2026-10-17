@@ -1,4 +1,4 @@
-import { IS_STATIC_PAGES } from '../lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from '../lib/deployment';
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
@@ -392,7 +392,7 @@ export const Header: React.FC = () => {
                     <span>Ir para o Dashboard (Início)</span>
                   </button>
 
-                  {!IS_STATIC_PAGES && (
+                  {!IS_STATIC_PAGES && !IS_CLOUD_PAGES && (
                     <>
                   <button
                     type="button"
@@ -492,6 +492,7 @@ export const Header: React.FC = () => {
                     <span>Sair da Conta</span>
                   </button>
 
+                  {!IS_CLOUD_PAGES && (
                   <button
                     type="button"
                     onClick={handleDeleteAccountConfirm}
@@ -500,6 +501,7 @@ export const Header: React.FC = () => {
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Excluir Conta e Dados</span>
                   </button>
+                  )}
                 </div>
               </div>
             )}
@@ -508,7 +510,7 @@ export const Header: React.FC = () => {
       </div>
 
       {/* MODAL: Conectar Outro Celular / Pairing Code Guide */}
-      {showPairingModal && !IS_STATIC_PAGES && (
+      {showPairingModal && !IS_STATIC_PAGES && !IS_CLOUD_PAGES && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
           <div
             className={`w-full max-w-md rounded-3xl p-6 shadow-2xl border ${

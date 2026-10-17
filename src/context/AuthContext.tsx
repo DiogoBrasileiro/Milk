@@ -2,7 +2,12 @@ import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthUser, Family, FamilyMember, BabyProfile, UserRole } from '../types';
 
-interface AuthContextType {
+export interface AuthContextType {
+  // Available only in the authenticated GitHub Pages edition.
+  cloudUserId?: string | null;
+  cloudAuthEmail?: string | null;
+  cloudAuthError?: string | null;
+  refreshCloudAccess?: () => Promise<void>;
   currentUser: AuthUser | null;
   currentFamily: Family | null;
   familyMembers: FamilyMember[];
@@ -13,8 +18,8 @@ interface AuthContextType {
   isLoading: boolean;
   isOnboarding: boolean;
   startLocalProfile: (name?: string) => void;
-  signUpWithEmail: (name: string, email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
-  signInWithEmail: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  signUpWithEmail: (name: string, email: string, pass: string) => Promise<{ success: boolean; error?: string; message?: string }>;
+  signInWithEmail: (email: string, pass: string) => Promise<{ success: boolean; error?: string; message?: string }>;
   signInWithFamilyCode: (code: string, caregiverName?: string) => Promise<{ success: boolean; error?: string }>;
   signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
   sendPasswordReset: (email: string) => Promise<{ success: boolean; message: string }>;
@@ -36,7 +41,7 @@ interface AuthContextType {
   ) => void;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AUTH_STORAGE_KEY = 'milkflow_auth_session_v2';
 const USERS_STORAGE_KEY = 'milkflow_users_db_v2';

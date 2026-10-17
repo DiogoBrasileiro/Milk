@@ -1,45 +1,55 @@
-# Publicação do MilkFlow no GitHub Pages
+# MilkFlow — GitHub Pages + Supabase
 
 URL: https://diogobrasileiro.github.io/Milk/
 
-1. Em Settings → Pages → Build and deployment, escolher Source = GitHub Actions.
-2. Ao atualizar main, o workflow compila o Vite com base /Milk/, verifica os artefatos e publica.
+## Produção
 
-## Limites do GitHub Pages
-O Pages é estático. Esta edição usa registros locais no navegador, sem
-sincronização multi-dispositivo, sem conta online e sem recuperação em nuvem.
-Não use dispositivos compartilhados. Exporte regularmente um backup JSON.
-Limpar os dados do navegador apaga os registros locais.
+O GitHub Pages só hospeda a interface. O histórico familiar é mantido no
+Supabase **mamei**, acessado por Supabase Auth e Row Level Security (RLS).
+Não é necessário hospedar um backend Express no Google Cloud Run.
 
-O banco existente no Google AI Studio não será migrado nem modificado.
+O workflow usa duas variáveis de repositório (Settings > Secrets and variables
+> Actions > Variables):
+
+- `MILK_SUPABASE_URL` — URL pública do projeto.
+- `MILK_SUPABASE_PUBLISHABLE_KEY` — chave **publishable** pública, nunca service_role ou secret.
+
+O build de produção é bloqueado se qualquer configuração estiver ausente.
+Na branch de PR os testes usam dados fictícios e **não** se conectam ao
+banco de produção.
+
+## Antes de ativar a versão Cloud
+
+Siga `docs/MILK-CODEX-SUPABASE-HANDOFF.md` por ordem:
+diagnóstico read-only, backup, criação de memberships,
+verificação de identidade, políticas RLS + RPC,
+testes, variáveis Actions e só depois merge na `main`.
+
+A migração **não cria outra família** nem substitui registros existentes.
+O histórico permanece na linha original verificada.
+
+## Funcionalidades durante a migração
+
+A `main` permanece na edição local já publicada até a configuração da
+autenticação e a homologação do banco. O PR acrescenta a edição Cloud,
+que sincroniza apenas contas vinculadas à mesma família. Login por
+código numérico antigo foi desabilitado.
 
 ## Segurança
-O backend Express/Supabase original ainda precisa de autenticação real e de
-revisão de permissões RLS antes de uma publicação pública. Um arquivo antigo
-com dados de usuários foi removido do HEAD da branch, porém permanece no
-histórico de commits e pode exigir saneamento histórico e rotação de códigos.
 
+O repo é público: nunca adicionar arquivos de backup familiar, tokens, emails,
+senhas ou chaves secretas ao Git. Há dados antigos removidos do HEAD mas ainda
+presentes no histórico; planejar limpeza e rotação de acessos em etapa separada.
+Não modificar o Cartório One.
 
-## Diagnóstico: implantação concluída mas site não abre
+## Diagnóstico de acesso ao endereço
 
-O workflow `deploy-pages.yml` publica a branch `main` com
-`bun run build:pages`. Essa é a versão **local**, sem conexão de produção
-com Supabase. A versão Supabase está em desenvolvimento no PR #2 e não
-deve ser integrada antes da autenticação/RLS serem validadas.
+Se a publicação em Actions passou mas a URL ainda redirecionar ou responder 404,
+confira `https://github.com/DiogoBrasileiro/Milk/settings/pages`:
+Source deve ser **GitHub Actions** e **Custom domain** não deve usar nenhum
+domínio do Cartório One. O endereço esperado é
+`https://diogobrasileiro.github.io/Milk/`.
+O domínio é configurado no painel Pages, não no arquivo CNAME do build.
 
-Se o endereço `https://diogobrasileiro.github.io/Milk/` apresentar 404
-ou redirecionar para outro projeto, abra:
-`https://github.com/DiogoBrasileiro/Milk/settings/pages`
-
-1. Em **Build and deployment**, deixe **Source: GitHub Actions**.
-2. Em **Custom domain**, remova qualquer domínio de outro projeto.
-   Em especial, **não utilizar um domínio do Cartório One** no MilkFlow.
-3. Confirme que o endereço oficial mostra `diogobrasileiro.github.io/Milk/`.
-4. Confira a execução de `Build and deploy MilkFlow to GitHub Pages`
-   na aba Actions. Não escolha "Unpublish site".
-5. Faça atualização forçada no navegador e teste em outro dispositivo.
-
-A configuração de domínio personalizado é um dado do repositório
-no GitHub Pages, **não** um arquivo CNAME desta build por Actions.
-Alterar os arquivos `public/CNAME` não substitui remover o domínio
-da tela de Settings > Pages.
+A verificação adicional de URL fica em
+`.github/workflows/verify-milk-pages.yml`.

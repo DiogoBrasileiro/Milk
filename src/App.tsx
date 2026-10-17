@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import { IS_STATIC_PAGES } from './lib/deployment';
+import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from './lib/deployment';
+import { CloudAuthProvider } from './context/CloudAuthProvider';
+import { CloudAuthScreen } from './components/auth/CloudAuthScreen';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
@@ -87,7 +89,7 @@ const AppContent: React.FC = () => {
 
   // Not logged in -> Show Mobile-First Auth Screen
   if (!currentUser) {
-    return IS_STATIC_PAGES ? <LocalProfileStart /> : <AuthScreen />;
+    return IS_CLOUD_PAGES ? <CloudAuthScreen /> : IS_STATIC_PAGES ? <LocalProfileStart /> : <AuthScreen />;
   }
 
   // Logged in but no baby registered yet -> Fast Onboarding Step
@@ -108,7 +110,14 @@ const AppContent: React.FC = () => {
         </div>
       )}
       <Header />
+      {IS_CLOUD_PAGES && (
+        <div role="status" className="sticky top-0 z-40 bg-amber-100 text-amber-950 px-4 py-3 text-center text-sm font-semibold">
+          Histórico em modo consulta: seus dados são carregados do Supabase.
+          Novos registros e alterações estão temporariamente desativados até validarmos a sincronização.
+        </div>
+      )}
 
+      <div style={IS_CLOUD_PAGES ? { pointerEvents: 'none', opacity: 0.92 } : undefined}>
       <main className="w-full">
         <ErrorBoundary fallbackTitle="Erro ao carregar o painel principal">
           {activeTab === 'home' && <HomeDashboard />}
@@ -155,16 +164,18 @@ const AppContent: React.FC = () => {
       {(activeModal === 'settings' || activeModal === 'babyProfile' || activeModal === 'caregivers') && (
         <SettingsModal />
       )}
+      </div>
     </div>
   );
 };
 
 export default function App() {
+  const FamilyAuth = IS_CLOUD_PAGES ? CloudAuthProvider : AuthProvider;
   return (
-    <AuthProvider>
+    <FamilyAuth>
       <AppProvider>
         <AppContent />
       </AppProvider>
-    </AuthProvider>
+    </FamilyAuth>
   );
 }
