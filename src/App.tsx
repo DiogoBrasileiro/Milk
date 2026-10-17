@@ -110,7 +110,14 @@ const AppContent: React.FC = () => {
         </div>
       )}
       <Header />
+      {IS_CLOUD_PAGES && (
+        <div role="status" className="sticky top-0 z-40 bg-amber-100 text-amber-950 px-4 py-3 text-center text-sm font-semibold">
+          Histórico em modo consulta: seus dados são carregados do Supabase.
+          Novos registros e alterações estão temporariamente desativados até validarmos a sincronização.
+        </div>
+      )}
 
+      <div style={IS_CLOUD_PAGES ? { pointerEvents: 'none', opacity: 0.92 } : undefined}>
       <main className="w-full">
         <ErrorBoundary fallbackTitle="Erro ao carregar o painel principal">
           {activeTab === 'home' && <HomeDashboard />}
@@ -157,6 +164,7 @@ const AppContent: React.FC = () => {
       {(activeModal === 'settings' || activeModal === 'babyProfile' || activeModal === 'caregivers') && (
         <SettingsModal />
       )}
+      </div>
     </div>
   );
 };
