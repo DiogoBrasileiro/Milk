@@ -71,6 +71,7 @@ class Api:
             self.snapshots[session["family"]["id"]] = snapshot
         self.fail_posts = False
         self.fail_reads = False
+        self.invalid_api_key = False
         self.false_ack = False
         self.posts = []
         self.blocked_external = []
@@ -108,6 +109,11 @@ class Api:
                 self.delay_next_post = False
                 self.post_started.set()
                 await self.release_post.wait()
+            if self.invalid_api_key:
+                await route.fulfill(status=503, content_type="application/json",
+                                    body=json.dumps({"success": False, "supabaseSynced": False,
+                                                     "errorCode": "invalid_api_key"}))
+                return
             if self.fail_posts:
                 await route.fulfill(status=503, content_type="application/json", body=json.dumps({"success": False, "supabaseSynced": False, "errorCode": "permission_denied", "error": "Synthetic database unavailable"}))
                 return
@@ -116,11 +122,17 @@ class Api:
             else:
                 self.snapshots[family_id] = merge(self.snapshots[family_id], payload.get("data", payload))
                 body = {"success": True, "supabaseActive": True, "supabaseSynced": True, "familyData": self.snapshots[family_id]}
+        elif path.endswith("/sync") and request.method == "GET" and self.invalid_api_key:
+            body = {"success": True, "supabaseActive": False, "supabaseIssue": "invalid_api_key",
+                    **session, "familyData": self.snapshots[family_id]}
         elif path.endswith("/sync") and request.method == "GET" and self.fail_reads:
             body = {"success": True, "supabaseActive": False, "supabaseIssue": "permission_denied",
                     **session, "familyData": self.snapshots[family_id]}
         elif path == "/api/supabase/status":
-            body = {"connected": True, "latencyMs": 1, "testedAt": NOW, "message": "Synthetic endpoint"}
+            body = {"connected": not self.invalid_api_key, "latencyMs": 1,
+                    "testedAt": NOW,
+                    "issueCode": "invalid_api_key" if self.invalid_api_key else None,
+                    "message": "Chave API inválida." if self.invalid_api_key else "Synthetic endpoint"}
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
 
@@ -308,6 +320,27 @@ async def run(args):
             await wait_counts(page, 3, 6)
             await wait_acknowledged(page)
             outcomes.append("PASS: logout/login switches families without copying records across accounts")
+
+            # The audit must never claim a cloud save when its API key is invalid.
+            api.invalid_api_key = True
+            await page.locator("#user-account-menu-btn").click()
+            await page.get_by_role("button", name=re.compile("Auditoria & Integridade")).click()
+            await page.get_by_text("Chave API inválida", exact=True).wait_for(timeout=10000)
+            await page.get_by_text("Cópia na nuvem não confirmada.", exact=False).wait_for()
+            await page.get_by_role("button", name="Tentar sincronizar").click()
+            await page.get_by_text("Sincronização não confirmada.", exact=False).wait_for(timeout=10000)
+            assert await page.get_by_text("Sem inconsistências locais identificadas").count() == 1
+            assert not await page.get_by_text("Dados sincronizados com o Supabase com sucesso").count()
+            await page.get_by_role("button", name="Fechar", exact=True).click()
+            await add_diaper(page)
+            await wait_counts(page, 3, 7)
+            await page.get_by_text("Chave API inválida no Supabase", exact=False).wait_for(timeout=10000)
+            assert await pending(page), "invalid key must not discard new diaper records"
+            api.invalid_api_key = False
+            await page.evaluate("window.dispatchEvent(new Event('online'))")
+            await wait_remote(page, api, 3, 7)
+            await wait_acknowledged(page)
+            outcomes.append("PASS: Invalid API key is diagnosed without false audit success or data loss")
 
         print(json.dumps({"results": outcomes, "mock_posts": len(api.posts), "external_requests_blocked": sorted(set(api.blocked_external))}, indent=2, ensure_ascii=False))
         await browser.close()
