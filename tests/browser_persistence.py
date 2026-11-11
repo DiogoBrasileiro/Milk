@@ -70,6 +70,7 @@ class Api:
             self.sessions[session["family"]["id"]] = session
             self.snapshots[session["family"]["id"]] = snapshot
         self.fail_posts = False
+        self.fail_reads = False
         self.false_ack = False
         self.posts = []
         self.blocked_external = []
@@ -108,13 +109,16 @@ class Api:
                 self.post_started.set()
                 await self.release_post.wait()
             if self.fail_posts:
-                await route.fulfill(status=503, content_type="application/json", body=json.dumps({"success": False, "supabaseSynced": False, "error": "Synthetic database unavailable"}))
+                await route.fulfill(status=503, content_type="application/json", body=json.dumps({"success": False, "supabaseSynced": False, "errorCode": "permission_denied", "error": "Synthetic database unavailable"}))
                 return
             if self.false_ack:
                 body = {"success": True, "supabaseSynced": False}
             else:
                 self.snapshots[family_id] = merge(self.snapshots[family_id], payload.get("data", payload))
                 body = {"success": True, "supabaseActive": True, "supabaseSynced": True, "familyData": self.snapshots[family_id]}
+        elif path.endswith("/sync") and request.method == "GET" and self.fail_reads:
+            body = {"success": True, "supabaseActive": False, "supabaseIssue": "permission_denied",
+                    **session, "familyData": self.snapshots[family_id]}
         elif path == "/api/supabase/status":
             body = {"connected": True, "latencyMs": 1, "testedAt": NOW, "message": "Synthetic endpoint"}
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
@@ -217,6 +221,18 @@ async def run(args):
             await wait_acknowledged(page)
         outcomes.append("PASS: real feeding/diaper UI saves and reload retains history")
 
+        if not args.baseline:
+            api.fail_reads = True
+            await page.locator("#cloud-sync-status-btn").click()
+            await page.get_by_text("O Supabase recusou a consulta", exact=False).wait_for(timeout=10000)
+            await page.wait_for_function("() => document.querySelector('#cloud-sync-status-btn')?.title.includes('Consulta ao banco não confirmada')", timeout=5000)
+            assert "Consulta ao banco não confirmada" in await badge(page), "read error was presented as an unsaved write"
+            assert not await pending(page), "unexpected queued writes while testing read-only failure"
+            api.fail_reads = False
+            await page.locator("#cloud-sync-status-btn").click()
+            await wait_acknowledged(page)
+            outcomes.append("PASS: read permission failures are distinct from pending writes and recover on retry")
+
         api.fail_posts = True
         await add_diaper(page, poop=True)
         await wait_counts(page, 2, 3)
@@ -225,6 +241,7 @@ async def run(args):
         outcomes.append("OBSERVED failed-write status: " + failed_badge)
         if not args.baseline:
             assert "Envio pendente:" in failed_badge, "failed write displayed as synchronized"
+            await page.get_by_text("O Supabase recusou a gravação", exact=False).wait_for(timeout=10000)
             assert await pending(page), "failed write is missing a durable outbox entry"
             await page.reload()
             await page.locator("#main-quick-record-fab").wait_for()

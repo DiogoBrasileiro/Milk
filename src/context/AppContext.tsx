@@ -1,4 +1,5 @@
 import { IS_STATIC_PAGES, IS_CLOUD_PAGES } from '../lib/deployment';
+import { unconfirmedReadMessage, unconfirmedWriteMessage } from '../lib/syncDiagnostics';
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import {
@@ -227,7 +228,7 @@ interface AppContextType {
   persistFamilyData: (overrideData?: Partial<any>) => void;
 
   // Multi-device Cloud Sync
-  cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error';
+  cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error' | 'read_error';
   lastCloudSyncTime: string | null;
   cloudSyncError: string | null;
   forceCloudSync: () => Promise<void>;
@@ -685,7 +686,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     delete deletedItemTimestampsRef.current[id];
   };
 
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('offline');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error' | 'read_error'>('offline');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
 
@@ -829,15 +830,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const syncMetadataRef = React.useRef({ family: currentFamily, babies });
   syncMetadataRef.current = { family: currentFamily, babies };
 
-  const flushPendingWrites = async () => {
+  const flushPendingWrites = async (): Promise<boolean> => {
     // Pages remains read-only until writes are validated in the mamei project.
     // An old outbox or a keyboard-triggered handler must not bypass that gate.
-    if (IS_STATIC_PAGES || IS_CLOUD_PAGES || !outbox || !currentUser) return;
-    if (!navigator.onLine) { setCloudSyncStatus('offline'); return; }
+    if (IS_STATIC_PAGES || IS_CLOUD_PAGES || !outbox || !currentUser) return true;
+    if (!navigator.onLine) { setCloudSyncStatus('offline'); return false; }
     const generation = syncGeneration.current;
     const active = () => syncGeneration.current === generation;
     try {
-      if (!outbox.pending().length) return;
+      if (!outbox.pending().length) return true;
       setCloudSyncStatus('syncing');
       await outbox.flush(async data => {
         const { family, babies: currentBabies } = syncMetadataRef.current;
@@ -849,9 +850,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             body: JSON.stringify({ family, babies: currentBabies, data }),
             signal: AbortSignal.timeout(20000),
           });
-          const result = await response.json();
-          if (!response.ok || result.success !== true || result.supabaseSynced !== true) {
-            throw new Error('O banco não confirmou o envio. Seus registros permanecem na fila para tentar novamente.');
+          const result = await response.json().catch(() => null);
+          if (!response.ok || result?.success !== true || result?.supabaseSynced !== true) {
+            const issue = response.ok && result?.success === true && result?.supabaseSynced === undefined
+              ? 'outdated_server' : result?.errorCode;
+            throw new Error(unconfirmedWriteMessage(issue));
           }
           if (active() && result.familyData) {
             applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
@@ -859,10 +862,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }, active);
       if (active()) markCloudConfirmed();
+      return active() && !outbox.pending().length;
     } catch (error: any) {
-      if (!active()) return;
+      if (!active()) return false;
       setCloudSyncStatus(navigator.onLine ? 'error' : 'offline');
       setCloudSyncError(error?.message || 'Envio pendente. Tentaremos novamente automaticamente.');
+      return false;
     }
   };
 
@@ -880,16 +885,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         const response = await fetch(`/api/family/${encodeURIComponent(familyId)}/sync`, {
           cache: 'no-store', signal: AbortSignal.timeout(20000),
         });
-        const result = await response.json();
+        const result = await response.json().catch(() => null);
         if (generation !== syncGeneration.current) return;
-        if (!response.ok || result.success !== true) throw new Error('Não foi possível atualizar o histórico.');
+        if (!response.ok || result?.success !== true) throw new Error(unconfirmedReadMessage(result?.supabaseIssue));
         if (result.familyData) applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
-        if (result.supabaseActive !== true) throw new Error('O servidor está sem confirmação do banco. O histórico local foi preservado.');
+        if (result.supabaseActive !== true) {
+          throw new Error(unconfirmedReadMessage(result.supabaseActive === undefined ? 'outdated_server' : result.supabaseIssue));
+        }
       }
       markCloudConfirmed();
     } catch (error: any) {
       if (generation !== syncGeneration.current) return;
-      setCloudSyncStatus(navigator.onLine ? 'error' : 'offline');
+      setCloudSyncStatus(navigator.onLine ? 'read_error' : 'offline');
       setCloudSyncError(error?.message || 'Não foi possível atualizar o histórico.');
     }
   };
@@ -925,8 +932,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const forceCloudSync = async () => {
     if (!currentFamily?.id) return;
-    await flushPendingWrites();
-    await pullFromCloud(currentFamily.id);
+    const writesConfirmed = await flushPendingWrites();
+    if (writesConfirmed) await pullFromCloud(currentFamily.id);
   };
 
   // Refresh and retry on reconnect, foregrounding, and a bounded fallback timer.
@@ -939,8 +946,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     applyIncomingFamilyData(harvestAndMergeAllUserData(familyId));
     const refresh = async () => {
       if (!active()) return;
-      await flushPendingWrites();
-      if (active()) await pullFromCloud(familyId);
+      const writesConfirmed = await flushPendingWrites();
+      if (active() && writesConfirmed) await pullFromCloud(familyId);
     };
     const channel = typeof BroadcastChannel !== 'undefined'
       ? new BroadcastChannel('milkflow_sync_' + familyId) : null;

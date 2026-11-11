@@ -61,3 +61,29 @@ SQL no projeto Cartório One para tentar corrigir o Milk.
 O aplicativo consegue preservar e reenviar dados ainda presentes no cache ou na
 fila do aparelho. Dados já apagados de todos os aparelhos e do banco exigem um
 backup válido; esta correção não recria registros históricos ausentes.
+
+## Diagnóstico de sincronização (11/11/2026)
+
+O aviso `O servidor está sem confirmação do banco` é emitido após um GET de
+`/api/family/:familyId/sync` quando `supabaseActive` não é `true`.
+A leitura pode falhar por indisponibilidade, permissão/RLS, limite de chamadas,
+ou ausência de uma linha visível (que também pode ser consequência de RLS).
+**Isso não comprova exclusão de registros.**
+
+- O backend retorna `supabaseIssue` e `errorCode` de um conjunto fechado, sem
+  vazar SQL, tokens, dados privados ou nomes de famílias.
+- A interface diferencia falha de leitura (`Sem banco`) de envio ainda não
+  confirmado (`Pendente`). Uma consulta após falha de escrita não pode mascarar
+  o erro de escrita nem liberar a fila de envio.
+- `/api/supabase/status` não deve declarar conexão saudável quando a tabela
+  obrigatória `milkflow_store` não está disponível.
+- Um servidor sem os campos de confirmação da nova versão gera aviso explícito
+  de backend desatualizado, em vez de um falso sucesso.
+
+**Pendente de homologação em produção:** identificar a URL realmente usada no
+aparelho, conferir a implantação correspondente do servidor Express e verificar
+em *mamei* os logs de leitura/gravação, existência da linha e políticas RLS.
+Não aplicar a migration de acesso público nem conectar o banco Cartório One.
+Os testes automatizados usam somente dados fictícios, não comprovam a escrita
+no Supabase de produção. É necessário backup verificado antes de qualquer
+alteração de RLS ou migração.
