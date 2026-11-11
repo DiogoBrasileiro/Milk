@@ -113,7 +113,7 @@ const AppContent: React.FC = () => {
       <Header />
       {!IS_STATIC_PAGES && cloudSyncError && (
         <div role="alert" className="bg-amber-50 text-amber-950 border-b border-amber-200 px-4 py-3 text-sm">
-          <strong>{cloudSyncStatus === 'offline' ? 'Sem conexão. ' : 'Sincronização pendente. '}</strong>
+          <strong>{cloudSyncStatus === 'offline' ? 'Sem conexão. ' : cloudSyncStatus === 'read_error' ? 'Falha na consulta ao banco. ' : 'Sincronização pendente. '}</strong>
           {cloudSyncError}
           <button type="button" onClick={() => void forceCloudSync()} className="ml-3 font-semibold underline">
             Tentar novamente
