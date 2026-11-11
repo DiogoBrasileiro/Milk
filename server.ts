@@ -10,8 +10,6 @@ import {
   syncFamilyDataToSupabase,
   persistFamilyDataToSupabase,
   loadFamilyDataFromSupabase,
-  getSupabaseSchemaSql,
-  updateSupabaseCredentials,
   SUPABASE_CONFIG,
 } from './server/supabase';
 
@@ -378,7 +376,7 @@ app.get('/api/supabase/status', async (req, res) => {
     return res.status(500).json({
       connected: false,
       projectUrl: SUPABASE_CONFIG.url,
-      message: err.message,
+      message: 'Falha ao consultar a configuração do banco.',
       testedAt: new Date().toISOString(),
     });
   }
@@ -399,7 +397,7 @@ app.post('/api/supabase/sync/:familyId', async (req, res) => {
       syncedAt: new Date().toISOString(),
     });
 
-    return res.json({
+    return res.status(success ? 200 : 503).json({
       success,
       projectUrl: SUPABASE_CONFIG.url,
       syncedAt: new Date().toISOString(),
@@ -409,26 +407,19 @@ app.post('/api/supabase/sync/:familyId', async (req, res) => {
   }
 });
 
-// POST /api/supabase/config - Update Supabase credentials runtime
-app.post('/api/supabase/config', async (req, res) => {
-  try {
-    const { url, anonKey } = req.body;
-    updateSupabaseCredentials(url, anonKey);
-    const health = await testSupabaseHealth();
-    return res.json({
-      success: health.connected,
-      health,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
+// Do not allow public HTTP requests to mutate the database destination or
+// API credentials. This was an unauthenticated runtime-configuration endpoint.
+app.post('/api/supabase/config', (_req, res) => {
+  return res.status(403).json({
+    success: false,
+    error: 'Configure o Supabase pelas variáveis de ambiente do servidor, não pela API pública.',
+  });
 });
 
-// GET /api/supabase/schema - Get SQL script to create tables in Supabase
-app.get('/api/supabase/schema', (req, res) => {
-  res.json({
-    sql: getSupabaseSchemaSql(),
-    projectUrl: SUPABASE_CONFIG.url,
+// Do not offer a permissive RLS policy to users as a quick SQL fix.
+app.get('/api/supabase/schema', (_req, res) => {
+  return res.status(410).json({
+    error: 'O assistente SQL público foi desativado para proteger os dados das famílias.',
   });
 });
 
@@ -437,9 +428,10 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     time: new Date().toISOString(),
-    multiDeviceCloudSync: true,
+    multiDeviceCloudSync: 'requires-database-confirmation',
     supabase: {
       url: SUPABASE_CONFIG.url,
+      configured: Boolean(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey),
     },
   });
 });
