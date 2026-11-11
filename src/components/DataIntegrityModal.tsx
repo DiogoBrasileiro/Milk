@@ -23,7 +23,7 @@ import {
   DataIntegrityIssue,
 } from '../services/dataIntegrityService';
 import { useApp } from '../context/AppContext';
-import { useAuth } from '../context/AuthContext';
+import { IS_CLOUD_PAGES, IS_STATIC_PAGES } from '../lib/deployment';
 import { checkSupabaseStatus, SupabaseStatus, SUPABASE_URL } from '../lib/supabaseClient';
 
 interface DataIntegrityModalProps {
@@ -51,9 +51,9 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
     persistFamilyData,
     exportDataJson,
     triggerUndoToast,
+    forceCloudSync,
+    cloudSyncStatus,
   } = useApp();
-
-  const { currentFamily } = useAuth();
 
   const [selectedIssueIds, setSelectedIssueIds] = useState<string[]>(() =>
     report.issues.filter((i) => i.autoFixAvailable).map((i) => i.id)
@@ -65,8 +65,6 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseStatus | null>(null);
   const [isCheckingSupabase, setIsCheckingSupabase] = useState(false);
   const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
-  const [copiedSql, setCopiedSql] = useState(false);
-  const [showSqlSchema, setShowSqlSchema] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -89,35 +87,20 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
   const handleSyncToSupabase = async () => {
     setIsSyncingSupabase(true);
     try {
-      const famId = currentFamily?.id || 'local-unassigned-family';
-      const res = await fetch(`/api/supabase/sync/${famId}`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        triggerUndoToast('✓ Dados sincronizados com o Supabase com sucesso!', () => {});
-        await handleCheckSupabase();
+      // Use the durable outbox; HTTP 200 alone is never proof of persistence.
+      const confirmed = await forceCloudSync();
+      const status = await checkSupabaseStatus();
+      setSupabaseStatus(status);
+      if (confirmed && status.connected && !IS_CLOUD_PAGES && !IS_STATIC_PAGES) {
+        triggerUndoToast('✓ Envios pendentes confirmados e banco consultado com sucesso.', () => {});
       } else {
-        triggerUndoToast('Aviso ao sincronizar com Supabase', () => {});
+        triggerUndoToast('Sincronização não confirmada. Registros locais preservados; exporte um backup.', () => {});
       }
-    } catch (err) {
-      console.warn('Falha no sync Supabase', err);
+    } catch (error) {
+      console.warn('Falha na tentativa de sincronização.', error);
+      triggerUndoToast('Falha na sincronização. Dados locais preservados; exporte um backup.', () => {});
     } finally {
       setIsSyncingSupabase(false);
-    }
-  };
-
-  const handleCopySql = async () => {
-    try {
-      const res = await fetch('/api/supabase/schema');
-      const data = await res.json();
-      if (data.sql) {
-        await navigator.clipboard.writeText(data.sql);
-        setCopiedSql(true);
-        triggerUndoToast('✓ Script SQL do Supabase copiado!', () => {});
-        setTimeout(() => setCopiedSql(false), 3000);
-      }
-    } catch (e) {
-      console.error(e);
     }
   };
 
@@ -224,11 +207,11 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                       : 'bg-rose-100 text-rose-800 dark:bg-rose-900/60 dark:text-rose-300'
                   }`}
                 >
-                  {report.healthScore}% Íntegro
+                  {report.healthScore}% local
                 </span>
               </h2>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Verificação ativa de consistência, conflitos e proteção contra perdas
+                Verificação de consistência local; nuvem verificada separadamente
               </p>
             </div>
           </div>
@@ -257,10 +240,16 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
             <div className="text-sm">
               <p className="font-semibold">{report.summaryMessage}</p>
               <p className="text-xs opacity-90 mt-1">
-                O MilkFlow nunca descarta ou substitui seus lançamentos manuais automaticamente. Todas as verificações garantem que nenhuma informação seja corrompida.
+                A auditoria verifica consistência neste aparelho, não confirma backup remoto. Exporte um backup JSON antes de qualquer alteração no banco.
               </p>
             </div>
           </div>
+
+          {(!supabaseStatus?.connected || cloudSyncStatus !== 'synced') && (
+            <div role="status" className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs leading-relaxed">
+              <strong>Cópia na nuvem não confirmada.</strong> O histórico local pode estar consistente, mas a gravação no Supabase não foi validada. Exporte um backup JSON e preserve este aparelho.
+            </div>
+          )}
 
           {repairSuccessMessage && (
             <div className="p-3.5 bg-emerald-100 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-emerald-900 dark:text-emerald-200 text-xs font-medium flex items-center gap-2">
@@ -368,14 +357,20 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                         }`}
                       />
                       {supabaseStatus?.connected
-                        ? 'Conectado e Ativo'
+                        ? 'Consulta disponível'
                         : isCheckingSupabase
                         ? 'Verificando...'
-                        : 'Chave Inválida / Desconectado'}
+                        : supabaseStatus?.issueCode === 'invalid_api_key'
+                        ? 'Chave API inválida'
+                        : supabaseStatus?.issueCode === 'missing_configuration'
+                        ? 'Configuração ausente'
+                        : supabaseStatus?.issueCode === 'permission_denied'
+                        ? 'Acesso negado'
+                        : 'Sem confirmação do banco'}
                     </span>
                   </div>
                   <p className="text-[11px] font-mono text-gray-500 dark:text-gray-400 truncate max-w-xs sm:max-w-sm">
-                    {SUPABASE_URL}
+                    {supabaseStatus?.projectUrl || SUPABASE_URL || 'URL do projeto não configurada'}
                   </p>
                 </div>
               </div>
@@ -384,22 +379,15 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                 <button
                   type="button"
                   onClick={handleSyncToSupabase}
-                  disabled={isSyncingSupabase}
+                  disabled={isSyncingSupabase || IS_CLOUD_PAGES || IS_STATIC_PAGES}
                   className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition disabled:opacity-50"
-                  title="Sincronizar dados com o Supabase"
+                  title="Reenviar alterações pendentes com confirmação do servidor"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSupabase ? 'animate-spin' : ''}`} />
-                  {isSyncingSupabase ? 'Sincronizando...' : 'Sincronizar Supabase'}
+                  {isSyncingSupabase ? 'Conferindo...' : 'Tentar sincronizar'}
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setShowSqlSchema(!showSqlSchema)}
-                  className="px-2.5 py-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 text-gray-700 dark:text-gray-300 text-xs font-medium transition"
-                  title="Ver script SQL de tabelas"
-                >
-                  SQL
-                </button>
+
               </div>
             </div>
 
@@ -414,38 +402,13 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                 </div>
                 {!supabaseStatus.connected && (
                   <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] leading-relaxed">
-                    <strong>Motivo identificado:</strong> O Supabase para REST API precisa da chave <strong>`anon` / `public` (formato JWT que começa com <code>eyJhbGciOi...</code>)</strong>. No painel do Supabase, acesse: <em>Project Settings ➔ API ➔ Project API Keys ➔ <strong>anon public</strong></em>.
+                    <strong>Correção necessária:</strong> no projeto Supabase do Milk, confira a URL e a chave pública <code>publishable</code> (prefixo <code>sb_publishable_</code>) ou a chave <code>anon</code> legada. Configure-a no ambiente do servidor e republique o backend. Não use <code>service_role</code> ou <code>sb_secret_</code> e não libere RLS publicamente. SQL não corrige chaves inválidas.
                   </div>
                 )}
               </div>
             )}
 
-            {showSqlSchema && (
-              <div className="mt-3 p-3 bg-gray-900 text-emerald-400 font-mono text-[11px] rounded-xl border border-gray-800 space-y-2">
-                <div className="flex items-center justify-between text-gray-400 text-[10px]">
-                  <span>Script SQL para o Editor do Supabase (Opcional)</span>
-                  <button
-                    onClick={handleCopySql}
-                    className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-bold"
-                  >
-                    {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedSql ? 'Copiado!' : 'Copiar SQL'}
-                  </button>
-                </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap select-all text-[10px] text-gray-300">
-{`CREATE TABLE IF NOT EXISTS public.milkflow_store (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
-);
 
-ALTER TABLE public.milkflow_store ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Acesso público MilkFlow" ON public.milkflow_store
-    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);`}
-                </pre>
-              </div>
-            )}
           </div>
 
           {/* List of Detected Issues */}
@@ -453,10 +416,10 @@ CREATE POLICY "Acesso público MilkFlow" ON public.milkflow_store
             <div className="text-center py-6 px-4 bg-emerald-50/50 dark:bg-emerald-950/20 rounded-2xl border border-emerald-100 dark:border-emerald-900/30">
               <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
               <h4 className="text-sm font-bold text-emerald-900 dark:text-emerald-300">
-                100% de Integridade Confirmada
+                Sem inconsistências locais identificadas
               </h4>
               <p className="text-xs text-emerald-700 dark:text-emerald-400 mt-1 max-w-md mx-auto">
-                Nenhuma inconsistência, valor negativo ou duplicidade detectada. Seus registros manuais estão armazenados e sincronizados com segurança.
+                Nenhuma inconsistência, valor negativo ou duplicidade detectada nos registros analisados. Isso não confirma que os dados chegaram ao Supabase.
               </p>
             </div>
           ) : (

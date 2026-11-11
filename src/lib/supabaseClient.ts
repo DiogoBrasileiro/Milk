@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { IS_CLOUD_PAGES, IS_STATIC_PAGES } from './deployment';
+import type { SyncIssueCode } from './syncDiagnostics';
 
 // Publishable/legacy anon keys are PUBLIC browser configuration. Never put a
 // service_role key, secret key, password or family pairing code in Vite env.
@@ -29,6 +30,7 @@ export interface SupabaseStatus {
   latencyMs: number;
   message: string;
   testedAt: string;
+  issueCode?: SyncIssueCode;
   tableStatus?: { familyDataExists: boolean; usersExists: boolean };
 }
 

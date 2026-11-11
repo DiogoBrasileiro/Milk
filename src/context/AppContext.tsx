@@ -231,7 +231,7 @@ interface AppContextType {
   cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error' | 'read_error';
   lastCloudSyncTime: string | null;
   cloudSyncError: string | null;
-  forceCloudSync: () => Promise<void>;
+  forceCloudSync: () => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -871,14 +871,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const pullFromCloud = async (familyId: string) => {
-    if (IS_STATIC_PAGES || !currentUser || familyId !== currentFamily?.id) return;
-    if (!navigator.onLine) { setCloudSyncStatus('offline'); return; }
+  const pullFromCloud = async (familyId: string): Promise<boolean> => {
+    if (IS_STATIC_PAGES || !currentUser || familyId !== currentFamily?.id) return false;
+    if (!navigator.onLine) { setCloudSyncStatus('offline'); return false; }
     const generation = syncGeneration.current;
     try {
       if (IS_CLOUD_PAGES) {
         const raw = await directLoadFamilyFromSupabase(familyId);
-        if (generation !== syncGeneration.current) return;
+        if (generation !== syncGeneration.current) return false;
         if (!raw) throw new Error('Não foi possível consultar o Supabase. O histórico local foi preservado.');
         applyIncomingFamilyData(snapshotData(raw), raw.babies, raw.family);
       } else {
@@ -886,7 +886,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           cache: 'no-store', signal: AbortSignal.timeout(20000),
         });
         const result = await response.json().catch(() => null);
-        if (generation !== syncGeneration.current) return;
+        if (generation !== syncGeneration.current) return false;
         if (!response.ok || result?.success !== true) throw new Error(unconfirmedReadMessage(result?.supabaseIssue));
         if (result.familyData) applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
         if (result.supabaseActive !== true) {
@@ -894,10 +894,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
       markCloudConfirmed();
+      return true;
     } catch (error: any) {
-      if (generation !== syncGeneration.current) return;
+      if (generation !== syncGeneration.current) return false;
       setCloudSyncStatus(navigator.onLine ? 'read_error' : 'offline');
       setCloudSyncError(error?.message || 'Não foi possível atualizar o histórico.');
+      return false;
     }
   };
 
@@ -930,10 +932,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await flushPendingWrites();
   };
 
-  const forceCloudSync = async () => {
-    if (!currentFamily?.id) return;
+  const forceCloudSync = async (): Promise<boolean> => {
+    if (!currentFamily?.id) return false;
+    // Pages is deliberately read-only; it can refresh, never confirm a write.
+    if (IS_CLOUD_PAGES) return pullFromCloud(currentFamily.id);
     const writesConfirmed = await flushPendingWrites();
-    if (writesConfirmed) await pullFromCloud(currentFamily.id);
+    return writesConfirmed ? pullFromCloud(currentFamily.id) : false;
   };
 
   // Refresh and retry on reconnect, foregrounding, and a bounded fallback timer.

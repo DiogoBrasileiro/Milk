@@ -31,3 +31,14 @@ test('unknown database errors never reveal underlying connection details', () =>
   assert.equal(unconfirmedWriteMessage('secret_database_message'), unconfirmedWriteMessage('not_confirmed'));
   assert.equal(unconfirmedReadMessage('secret_database_message'), unconfirmedReadMessage('unavailable'));
 });
+
+test('Invalid API key is NOT an RLS error and takes priority over 401', () => {
+  assert.equal(classifySupabaseFailure({ status: 401, message: 'Invalid API key' }), 'invalid_api_key');
+  assert.equal(classifySupabaseFailure({ status: 401, message: 'invalid apikey' }), 'invalid_api_key');
+  assert.equal(classifySupabaseFailure({ code: 'MILK_PUBLIC_KEY_MISSING' }), 'missing_configuration');
+  assert.equal(classifySupabaseFailure({ code: 'MILK_UNSAFE_KEY_TYPE' }), 'unsafe_key_type');
+  assert.equal(classifySupabaseFailure({ code: 'PGRST205' }), 'missing_table');
+  assert.match(unconfirmedWriteMessage('invalid_api_key'), /Chave API inválida/);
+  assert.match(unconfirmedReadMessage('invalid_api_key'), /Chave API inválida/);
+  assert.doesNotMatch(unconfirmedWriteMessage('invalid_api_key'), /permissão\/RLS/);
+});

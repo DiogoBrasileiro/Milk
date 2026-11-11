@@ -1,43 +1,55 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { FamilyWriteQueue, persistFamilySnapshot } from './familyPersistence';
+import { classifySupabaseFailure, type SyncIssueCode } from '../src/lib/syncDiagnostics';
 
-const VALID_ANON_JWT =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvYWdtcXJyYnNjZW1scXFjY2ZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTEwODEsImV4cCI6MjEwMjU2NzA4MX0.BWmvH8WLYVkWoi-pCZcM-cPdvt9s5DzuUR2gGkE6E90';
-
-const DEFAULT_SUPABASE_URL = 'https://poagmqrrbscemlqqccfe.supabase.co';
-
-function resolveAnonKey(): string {
-  const envKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
-  if (envKey && envKey.trim()) {
-    return envKey.trim();
-  }
-  return VALID_ANON_JWT;
-}
-
+// No public API key should be embedded as an undocumented fallback. A stale
+// hard-coded key silently causes "Invalid API key" after key rotation.
 export const SUPABASE_CONFIG = {
-  url: process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL,
-  anonKey: resolveAnonKey(),
+  url: (process.env.SUPABASE_URL || '').trim(),
+  anonKey: (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim(),
 };
 
 let supabaseClient: SupabaseClient | null = null;
 
-export function updateSupabaseCredentials(url?: string, anonKey?: string) {
-  if (url && url.trim()) {
-    SUPABASE_CONFIG.url = url.trim();
+function configError(message: string, code: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+export function validatePublicSupabaseConfig(url: string, key: string): void {
+  // HTTPS for hosted Supabase projects; HTTP is permitted ONLY for loopback
+  // integration tests that use a local, synthetic REST server.
+  const hosted = /^https:\/\/[^/?#@]+\/?$/i.test(url);
+  const loopback = /^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/i.test(url);
+  if (!hosted && !loopback) {
+    throw configError('SUPABASE_URL deve conter a URL HTTPS do projeto de dados do Milk.', 'MILK_PROJECT_URL_MISSING');
   }
-  if (anonKey && anonKey.trim()) {
-    SUPABASE_CONFIG.anonKey = anonKey.trim();
+  if (!key) {
+    throw configError('SUPABASE_PUBLISHABLE_KEY (ou SUPABASE_ANON_KEY) não foi configurada.', 'MILK_PUBLIC_KEY_MISSING');
   }
-  supabaseClient = null; // Forces re-instantiation with new credentials
+  // The current server routes do not authenticate Supabase users. In particular,
+  // exposing an elevated key here could bypass RLS for every request.
+  if (key.startsWith('sb_secret_')) {
+    throw configError('Chave secreta não autorizada para esta integração.', 'MILK_UNSAFE_KEY_TYPE');
+  }
+  if (key.startsWith('eyJ')) {
+    try {
+      const claims = JSON.parse(Buffer.from(key.split('.')[1] || '', 'base64url').toString('utf8'));
+      if (claims.role === 'service_role') {
+        throw configError('Chave service_role não autorizada para esta integração.', 'MILK_UNSAFE_KEY_TYPE');
+      }
+    } catch (error: any) {
+      if (error?.code === 'MILK_UNSAFE_KEY_TYPE') throw error;
+      // A malformed public token must be rejected by the API, not treated as a
+      // verified credential based on this untrusted, unsigned local decode.
+    }
+  }
 }
 
 export function getSupabase(): SupabaseClient {
   if (!supabaseClient) {
     const url = SUPABASE_CONFIG.url;
     const key = SUPABASE_CONFIG.anonKey;
-    if (!url || !key) {
-      throw new Error('Supabase URL and Anon Key are required');
-    }
+    validatePublicSupabaseConfig(url, key);
     supabaseClient = createClient(url, key, {
       auth: {
         persistSession: false,
@@ -54,6 +66,7 @@ export interface SupabaseHealthResult {
   latencyMs: number;
   message: string;
   testedAt: string;
+  issueCode?: SyncIssueCode;
   tableStatus?: {
     familyDataExists: boolean;
     usersExists: boolean;
@@ -64,69 +77,49 @@ export interface SupabaseHealthResult {
  * Testa conectividade real com a instância do Supabase
  */
 export async function testSupabaseHealth(): Promise<SupabaseHealthResult> {
-  const startTime = Date.now();
-  const testedAt = new Date().toISOString();
+  const start = Date.now();
+  const at = new Date().toISOString();
   const projectUrl = SUPABASE_CONFIG.url;
 
   try {
     const client = getSupabase();
-    // Test basic ping/query to Supabase REST endpoint
-    const { data, error } = await client.from('milkflow_store').select('key').limit(1);
-
-    const latencyMs = Date.now() - startTime;
-
-    if (error) {
-      // Check if error is just missing table (PGRST116 / 42P01 / 404), which means Supabase is REACHABLE and responsive
-      const isMissingTable =
-        error.code === '42P01' ||
-        error.code === 'PGRST205' ||
-        error.code === 'PGRST204' ||
-        error.message?.includes('does not exist') ||
-        error.message?.includes('relation') ||
-        error.message?.includes('not found');
-
-      if (isMissingTable) {
-        return {
-          connected: false,
-          projectUrl,
-          latencyMs,
-          message: 'Supabase acessível, mas a tabela milkflow_store está ausente ou indisponível. A gravação não está confirmada.',
-          testedAt,
-          tableStatus: {
-            familyDataExists: false,
-            usersExists: false,
-          },
-        };
-      }
-
-      return {
-        connected: false,
-        projectUrl,
-        latencyMs,
-        message: `Aviso Supabase: ${error.message}`,
-        testedAt,
-      };
-    }
-
+    // Health checks only prove this API key can SELECT a table; they do NOT
+    // prove that a particular family is visible or that an INSERT will work.
+    const { error } = await client.from('milkflow_store').select('key').limit(1);
+    if (error) throw error;
     return {
       connected: true,
       projectUrl,
-      latencyMs,
-      message: 'Supabase 100% online e conectado',
-      testedAt,
-      tableStatus: {
-        familyDataExists: true,
-        usersExists: true,
-      },
+      latencyMs: Date.now() - start,
+      testedAt: at,
+      message: 'Leitura da tabela disponível. A gravação de cada família ainda precisa de confirmação própria.',
+      tableStatus: { familyDataExists: true, usersExists: false },
     };
-  } catch (err: any) {
-    const latencyMs = Date.now() - startTime;
+  } catch (error) {
+    const issueCode = classifySupabaseFailure(error);
+    const message: Record<SyncIssueCode, string> = {
+      invalid_api_key: 'Chave API inválida. Configure a chave publishable/anon do mesmo projeto Supabase no servidor Milk.',
+      missing_configuration: 'Configuração ausente: defina SUPABASE_URL e SUPABASE_PUBLISHABLE_KEY no ambiente do servidor.',
+      unsafe_key_type: 'Chave secreta não permitida. Use apenas uma chave publishable/anon neste servidor.',
+      permission_denied: 'Consulta ao Supabase recusada. Verifique autenticação e RLS, sem permitir acesso público irrestrito.',
+      rate_limited: 'Supabase limitou requisições. Dados locais preservados; tente novamente mais tarde.',
+      missing_table: 'Tabela milkflow_store indisponível. Não execute migrações antes de um backup auditado.',
+      not_visible: 'A família não está visível no banco. Os registros locais foram preservados.',
+      outdated_server: 'Atualização necessária do servidor Milk.',
+      not_confirmed: 'Conexão ao banco não confirmada.',
+      unavailable: 'Supabase indisponível. Verifique rede, URL e status do projeto.',
+    };
+    // Never send raw driver errors or credential material to the browser.
     return {
       connected: false,
       projectUrl,
-      latencyMs,
-      message: `Erro ao conectar no Supabase: ${err.message || 'Falha de rede'}`,
-      testedAt,
+      latencyMs: Date.now() - start,
+      testedAt: at,
+      issueCode,
+      message: message[issueCode],
+      ...(issueCode === 'missing_table' ? {
+        tableStatus: { familyDataExists: false, usersExists: false },
+      } : {}),
     };
   }
 }
@@ -217,32 +210,11 @@ export async function syncUserToSupabase(user: any): Promise<boolean> {
 }
 
 /**
- * Script SQL para criar a tabela no Supabase caso o usuário deseje executar no editor SQL do Supabase
+ * This legacy endpoint is intentionally non-executable. Publishing a policy
+ * FOR ALL TO anon USING(true) would expose every family's records to the public.
+ * Table policies must be reviewed and deployed as an authenticated migration.
  */
 export function getSupabaseSchemaSql(): string {
-  return `-- Tabela de Armazenamento Principal do MilkFlow no Supabase
-CREATE TABLE IF NOT EXISTS public.milkflow_store (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
-);
-
--- Habilitar Row Level Security (RLS) permissivo para anon/authenticated
-ALTER TABLE public.milkflow_store ENABLE ROW LEVEL SECURITY;
-
--- Política de Leitura e Gravação para clientes com Publishable Key
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_policies WHERE tablename = 'milkflow_store' AND policyname = 'Acesso público MilkFlow'
-    ) THEN
-        CREATE POLICY "Acesso público MilkFlow" ON public.milkflow_store
-            FOR ALL
-            TO anon, authenticated
-            USING (true)
-            WITH CHECK (true);
-    END IF;
-END
-$$;
-`;
+  return '-- Por segurança, o Milk não gera políticas públicas de acesso.\\n' +
+    '-- Verifique o backup e use somente as migrations autenticadas do projeto mamei.';
 }
