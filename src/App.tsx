@@ -74,7 +74,8 @@ const LocalProfileStart: React.FC = () => {
 
 const AppContent: React.FC = () => {
   const { currentUser, isOnboarding, isLoading } = useAuth();
-  const { activeTab, activeModal, modalData, closeModal, isNightMode, undoToast, clearUndoToast } = useApp();
+  const { activeTab, activeModal, modalData, closeModal, isNightMode, undoToast, clearUndoToast,
+    cloudSyncStatus, cloudSyncError, forceCloudSync } = useApp();
 
   if (isLoading) {
     return (
@@ -110,6 +111,15 @@ const AppContent: React.FC = () => {
         </div>
       )}
       <Header />
+      {!IS_STATIC_PAGES && cloudSyncError && (
+        <div role="alert" className="bg-amber-50 text-amber-950 border-b border-amber-200 px-4 py-3 text-sm">
+          <strong>{cloudSyncStatus === 'offline' ? 'Sem conexão. ' : 'Sincronização pendente. '}</strong>
+          {cloudSyncError}
+          <button type="button" onClick={() => void forceCloudSync()} className="ml-3 font-semibold underline">
+            Tentar novamente
+          </button>
+        </div>
+      )}
       {IS_CLOUD_PAGES && (
         <div role="status" className="sticky top-0 z-40 bg-amber-100 text-amber-950 px-4 py-3 text-center text-sm font-semibold">
           Histórico em modo consulta: seus dados são carregados do Supabase.
@@ -169,13 +179,21 @@ const AppContent: React.FC = () => {
   );
 };
 
+const FamilyApplication: React.FC = () => {
+  const { currentFamily, currentUser } = useAuth();
+  // A different account/family must start with its own refs, cache and queue.
+  return (
+    <AppProvider key={`${currentUser?.id || 'guest'}:${currentFamily?.id || 'guest'}`}>
+      <AppContent />
+    </AppProvider>
+  );
+};
+
 export default function App() {
   const FamilyAuth = IS_CLOUD_PAGES ? CloudAuthProvider : AuthProvider;
   return (
     <FamilyAuth>
-      <AppProvider>
-        <AppContent />
-      </AppProvider>
+      <FamilyApplication />
     </FamilyAuth>
   );
 }

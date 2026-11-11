@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { FamilyWriteQueue, persistFamilySnapshot } from './familyPersistence';
 
 const VALID_ANON_JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvYWdtcXJyYnNjZW1scXFjY2ZlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5OTEwODEsImV4cCI6MjEwMjU2NzA4MX0.BWmvH8WLYVkWoi-pCZcM-cPdvt9s5DzuUR2gGkE6E90';
@@ -6,8 +7,8 @@ const VALID_ANON_JWT =
 const DEFAULT_SUPABASE_URL = 'https://poagmqrrbscemlqqccfe.supabase.co';
 
 function resolveAnonKey(): string {
-  const envKey = process.env.SUPABASE_ANON_KEY;
-  if (envKey && envKey.startsWith('eyJ')) {
+  const envKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
+  if (envKey && envKey.trim()) {
     return envKey.trim();
   }
   return VALID_ANON_JWT;
@@ -130,33 +131,49 @@ export async function testSupabaseHealth(): Promise<SupabaseHealthResult> {
   }
 }
 
-/**
- * Salva ou sincroniza dados da família no Supabase de forma consistente e segura
- */
+const familyWrites = new FamilyWriteQueue();
+
+/** Only resolves after the database returns the row written by this attempt. */
+export function persistFamilyDataToSupabase(familyId: string, familyData: any): Promise<any> {
+  // Capture the request now; objects in the in-memory store can change while queued.
+  const snapshot = JSON.parse(JSON.stringify(familyData));
+  return familyWrites.run(familyId, async () => {
+    const client = getSupabase();
+    return persistFamilySnapshot({
+      async read(key) {
+        const { data, error } = await client.from('milkflow_store')
+          .select('value,updated_at').eq('key', key).maybeSingle();
+        if (error) throw error;
+        return data ? { value: data.value, updatedAt: data.updated_at } : null;
+      },
+      async insert(key, value, updatedAt) {
+        const { data, error } = await client.from('milkflow_store')
+          .insert({ key, value, updated_at: updatedAt }).select('key');
+        if (error?.code === '23505') return false; // A concurrent process inserted it.
+        if (error) throw error;
+        return data?.some(row => row.key === key) ?? false;
+      },
+      async replace(key, previousRevision, value, updatedAt) {
+        let query = client.from('milkflow_store')
+          .update({ value, updated_at: updatedAt }).eq('key', key);
+        query = previousRevision === null
+          ? query.is('updated_at', null)
+          : query.eq('updated_at', previousRevision);
+        const { data, error } = await query.select('key');
+        if (error) throw error;
+        return data?.some(row => row.key === key) ?? false;
+      },
+    }, familyId, snapshot);
+  });
+}
+
+/** Compatibility wrapper for callers that only need a persistence ACK. */
 export async function syncFamilyDataToSupabase(familyId: string, familyData: any): Promise<boolean> {
   try {
-    const client = getSupabase();
-    const payload = {
-      key: `family_data_${familyId}`,
-      value: {
-        ...familyData,
-        _syncedAt: new Date().toISOString(),
-        _source: 'milkflow_app',
-      },
-      updated_at: new Date().toISOString(),
-    };
-
-    const { error } = await client
-      .from('milkflow_store')
-      .upsert(payload, { onConflict: 'key' });
-
-    if (error) {
-      console.warn('Supabase store sync notice:', error.message);
-      return false;
-    }
+    await persistFamilyDataToSupabase(familyId, familyData);
     return true;
-  } catch (err: any) {
-    console.warn('Supabase sync exception:', err?.message);
+  } catch (error: any) {
+    console.warn('Supabase family write was not confirmed:', error?.code || error?.name || 'write_failed');
     return false;
   }
 }
@@ -165,22 +182,14 @@ export async function syncFamilyDataToSupabase(familyId: string, familyData: any
  * Carrega dados da família do Supabase se existirem
  */
 export async function loadFamilyDataFromSupabase(familyId: string): Promise<any | null> {
-  try {
-    const client = getSupabase();
-    const { data, error } = await client
-      .from('milkflow_store')
-      .select('value')
-      .eq('key', `family_data_${familyId}`)
-      .single();
-
-    if (error || !data) {
-      return null;
-    }
-    return data.value;
-  } catch (err) {
-    console.warn('Supabase load exception:', err);
-    return null;
-  }
+  const client = getSupabase();
+  const { data, error } = await client
+    .from('milkflow_store')
+    .select('value')
+    .eq('key', `family_data_${familyId}`)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.value ?? null;
 }
 
 /**
