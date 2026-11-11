@@ -16,7 +16,11 @@ function configError(message: string, code: string): Error {
 }
 
 export function validatePublicSupabaseConfig(url: string, key: string): void {
-  if (!url || !/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(url)) {
+  // HTTPS for hosted Supabase projects; HTTP is permitted ONLY for loopback
+  // integration tests that use a local, synthetic REST server.
+  const hosted = /^https:\/\/[^/?#@]+\/?$/i.test(url);
+  const loopback = /^http:\/\/(127\.0\.0\.1|localhost):[0-9]+\/?$/i.test(url);
+  if (!hosted && !loopback) {
     throw configError('SUPABASE_URL deve conter a URL HTTPS do projeto de dados do Milk.', 'MILK_PROJECT_URL_MISSING');
   }
   if (!key) {
