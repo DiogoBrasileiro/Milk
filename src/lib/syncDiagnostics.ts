@@ -11,7 +11,8 @@ export type SyncIssueCode =
   | 'not_confirmed';
 
 export function classifySupabaseFailure(error: unknown): SyncIssueCode {
-  const fault = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const fault: Record<string, unknown> = error && typeof error === 'object'
+    ? error as Record<string, unknown> : {};
   const status = Number(fault.status ?? fault.statusCode ?? 0);
   const code = typeof fault.code === 'string' ? fault.code.toUpperCase() : '';
   const message = typeof fault.message === 'string' ? fault.message.toLowerCase() : '';
