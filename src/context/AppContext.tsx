@@ -228,7 +228,7 @@ interface AppContextType {
   persistFamilyData: (overrideData?: Partial<any>) => void;
 
   // Multi-device Cloud Sync
-  cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error';
+  cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error' | 'read_error';
   lastCloudSyncTime: string | null;
   cloudSyncError: string | null;
   forceCloudSync: () => Promise<void>;
@@ -686,7 +686,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     delete deletedItemTimestampsRef.current[id];
   };
 
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('offline');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error' | 'read_error'>('offline');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
 
@@ -896,7 +896,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       markCloudConfirmed();
     } catch (error: any) {
       if (generation !== syncGeneration.current) return;
-      setCloudSyncStatus(navigator.onLine ? 'error' : 'offline');
+      setCloudSyncStatus(navigator.onLine ? 'read_error' : 'offline');
       setCloudSyncError(error?.message || 'Não foi possível atualizar o histórico.');
     }
   };
