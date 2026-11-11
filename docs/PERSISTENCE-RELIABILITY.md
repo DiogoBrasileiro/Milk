@@ -1,0 +1,63 @@
+# Confiabilidade dos registros — Milk
+
+## Correções
+
+O histórico não deve ser substituído por um snapshot vazio ou antigo. A edição
+com servidor agora usa um único caminho de escrita: fila persistente por família
+no navegador → servidor → merge com comparação de versão no Supabase.
+
+- Mamadas e fraldas recebem IDs aleatórios para evitar colisão entre aparelhos.
+- Cada aba mantém seu envio pendente em uma chave própria. A confirmação de uma
+  versão antiga não remove alterações feitas enquanto a requisição estava ativa.
+- Fechar/reabrir o aplicativo recupera a fila. Reconexão, foco e verificação
+  periódica tentam reenviar sem exigir uma nova edição.
+- Login e renovação de sessão mesclam o cache atual da família. Trocar de conta
+  recria o estado do aplicativo e invalida respostas antigas.
+- Listas são unidas por ID; edições e exclusões explícitas respeitam a revisão
+  mais recente. A ausência de um registro em um snapshot não significa exclusão.
+- O servidor lê o registro e atualiza somente se `updated_at` ainda corresponder
+  à versão lida. Em um conflito, relê e mescla os registros do outro escritor.
+- HTTP 200 e `supabaseSynced: true` exigem confirmação do banco. Falhas retornam
+  HTTP 503 e a interface mantém “Pendente”, sem descartar o envio.
+- O arquivo local do servidor é substituído atomicamente. Arquivo corrompido ou
+  ilegível é preservado; a inicialização falha em vez de recriar dados vazios.
+
+## Validação reproduzível
+
+```sh
+npm run lint
+npm run test:cloud
+npm run build
+VITE_SUPABASE_URL=https://example.supabase.co \
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_test_only npm run build:pages
+```
+
+Os testes de `test:cloud` usam apenas dados fictícios. A integração HTTP inicia o
+servidor real com um endpoint Supabase simulado localmente; cobre erro de permissão,
+reenvio, confirmação, concorrência e preservação de arquivo corrompido.
+
+O workflow `verify-milk-pages.yml` também executa
+`tests/browser_persistence.py` em Chromium. O frontend Vite é iniciado sem o
+backend e todas as APIs são interceptadas. Esse teste cobre mamadas, fraldas,
+recarga, rede indisponível, confirmação falsa/atrasada e isolamento entre famílias.
+
+## Publicação e limites da verificação
+
+O workflow de implantação deste repositório publica o **GitHub Pages**. Ele não
+publica o servidor Express no Google AI Studio/Cloud Run. A instalação com servidor
+precisa executar esta revisão tanto no frontend quanto no backend. Versões antigas
+que ainda fazem `upsert` completo não têm a proteção de concorrência desta revisão.
+
+A edição Pages permanece em **modo consulta**, inclusive na camada de transporte.
+Sua habilitação de escrita depende de verificação autenticada de Auth/RLS/RPC no
+projeto Supabase **mamei**. Esta correção não concede permissões, não altera políticas
+e não executa migrações no banco de produção.
+
+O acesso administrativo disponível durante esta correção não incluía mamei.
+Os testes com banco simulado comprovam o comportamento do código, mas não comprovam
+as permissões, a disponibilidade ou o salvamento no banco real. Não se deve aplicar
+SQL no projeto Cartório One para tentar corrigir o Milk.
+
+O aplicativo consegue preservar e reenviar dados ainda presentes no cache ou na
+fila do aparelho. Dados já apagados de todos os aparelhos e do banco exigem um
+backup válido; esta correção não recria registros históricos ausentes.

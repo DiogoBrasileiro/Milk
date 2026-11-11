@@ -46,10 +46,13 @@ import {
   requestNotificationPermission,
 } from '../utils/reminderAlarm';
 import {
-  directSaveFamilyToSupabase,
   directLoadFamilyFromSupabase,
   subscribeToFamilyInSupabase,
 } from '../lib/supabaseClient';
+import {
+  FamilyOutbox, mergeFamilySnapshots, mergeDeletionMaps, readPendingFamilyWrites,
+  snapshotData, uniqueRecordId,
+} from '../lib/familyPersistence';
 
 interface AppContextType {
   baby: BabyProfile;
@@ -226,14 +229,13 @@ interface AppContextType {
   // Multi-device Cloud Sync
   cloudSyncStatus: 'synced' | 'syncing' | 'offline' | 'error';
   lastCloudSyncTime: string | null;
+  cloudSyncError: string | null;
   forceCloudSync: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-// 🛡️ UNIVERSAL DATA HARVESTER & RECOVERY ENGINE
-// Deep scans all localStorage keys (active family, all other families, guest data, legacy keys, backups)
-// and merges all records to guarantee 0% data loss across any device, logout or update.
+// Recover only the selected family's cache and unacknowledged writes.
 export function harvestAndMergeAllUserData(activeFamilyId?: string) {
   const merged = {
     protocolId: 'brasil_ms' as ConservationProtocolId,
@@ -257,6 +259,7 @@ export function harvestAndMergeAllUserData(activeFamilyId?: string) {
     customReminderIntervalMinutes: 165,
     baby: null as Partial<BabyProfile> | null,
     lastUpdatedAt: '',
+    deletedItemIds: {} as Record<string, string>,
   };
 
   if (typeof window === 'undefined' || !window.localStorage) {
@@ -268,14 +271,14 @@ export function harvestAndMergeAllUserData(activeFamilyId?: string) {
   const familyKey = activeFamilyId ? `milkflow_family_data_${activeFamilyId}` : 'milkflow_guest_data';
   let raw = localStorage.getItem(familyKey);
 
-  if (!IS_CLOUD_PAGES && (!raw || !raw.trim().startsWith('{'))) {
+  if (!activeFamilyId && !IS_CLOUD_PAGES && (!raw || !raw.trim().startsWith('{'))) {
     raw = localStorage.getItem('milkflow_universal_backup');
   }
 
   if (raw && raw.trim().startsWith('{')) {
     try {
       const parsed = JSON.parse(raw);
-      const dataObj = parsed.familyData || parsed;
+      const dataObj = snapshotData(parsed);
       if (dataObj && typeof dataObj === 'object') {
         if (dataObj.protocolId) merged.protocolId = dataObj.protocolId;
         const manualSaved = localStorage.getItem('milkflow_selected_protocol') as ConservationProtocolId;
@@ -302,12 +305,21 @@ export function harvestAndMergeAllUserData(activeFamilyId?: string) {
         if (Array.isArray(dataObj.aiInsights)) merged.aiInsights = dataObj.aiInsights;
         if (Array.isArray(dataObj.caregivers)) merged.caregivers = dataObj.caregivers;
         if (dataObj.lastUpdatedAt) merged.lastUpdatedAt = dataObj.lastUpdatedAt;
+        merged.deletedItemIds = mergeDeletionMaps(dataObj.deletedItemIds);
       }
     } catch (e) {
       console.warn('Error reading family data', e);
     }
   }
 
+  if (activeFamilyId) {
+    try {
+      return readPendingFamilyWrites(localStorage, activeFamilyId)
+        .reduce((data, entry) => mergeFamilySnapshots(data, entry.data) as typeof merged, merged);
+    } catch (error) {
+      console.warn('Não foi possível recuperar todos os envios pendentes.', error);
+    }
+  }
   return merged;
 }
 
@@ -319,6 +331,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Compute universally harvested initial data
   const initialHarvested = useMemo(() => harvestAndMergeAllUserData(currentFamily?.id), [currentFamily?.id]);
+  const outbox = useMemo(() => currentFamily?.id
+    ? new FamilyOutbox(localStorage, currentFamily.id) : null, [currentFamily?.id]);
+  const syncGeneration = React.useRef(0);
+  const readOnlyLocalMutation = React.useRef(false);
+  const latestSnapshotTime = React.useRef(initialHarvested.lastUpdatedAt);
 
   const defaultBaby: BabyProfile = activeBaby || {
     id: initialHarvested?.baby?.id || 'baby_initial',
@@ -501,7 +518,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const customReminderIntervalRef = React.useRef<number>(customReminderIntervalMinutes);
   customReminderIntervalRef.current = customReminderIntervalMinutes;
 
-  // Immediate and guaranteed sync to localStorage & Cloud backend
+  // Persist locally before starting a network request; retain unacknowledged writes.
   const persistFamilyData = (overrides?: {
     protocolId?: ConservationProtocolId;
     baby?: BabyProfile | Partial<BabyProfile>;
@@ -524,7 +541,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     caregivers?: Caregiver[];
     customReminderIntervalMinutes?: number;
   }) => {
-    const dataToSave = {
+    let dataToSave = {
       protocolId: overrides?.protocolId ?? protocolIdRef.current,
       baby: (overrides?.baby ? { ...babyRef.current, ...overrides.baby } : babyRef.current) as BabyProfile,
       batches: overrides?.batches ?? batchesRef.current,
@@ -546,24 +563,30 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       caregivers: overrides?.caregivers ?? caregiversRef.current,
       customReminderIntervalMinutes: overrides?.customReminderIntervalMinutes ?? customReminderIntervalRef.current,
       lastUpdatedAt: new Date().toISOString(),
+      deletedItemIds: { ...deletedItemTimestampsRef.current },
     };
 
     lastLocalMutationTime.current = Date.now();
+    latestSnapshotTime.current = dataToSave.lastUpdatedAt;
 
     try {
       if (!IS_CLOUD_PAGES || currentFamily?.id) {
+        const cached = localStorage.getItem(familyStorageKey);
+        dataToSave = mergeFamilySnapshots(cached ? JSON.parse(cached) : {}, dataToSave) as typeof dataToSave;
         localStorage.setItem(familyStorageKey, JSON.stringify(dataToSave));
       }
-      if (!IS_CLOUD_PAGES) {
+      if (!currentFamily?.id && !IS_CLOUD_PAGES) {
         localStorage.setItem('milkflow_universal_backup', JSON.stringify(dataToSave));
         localStorage.setItem('milkflow_guest_data', JSON.stringify(dataToSave));
       }
     } catch (e) {
       console.error('Error saving family data to localStorage', e);
+      setCloudSyncError('Não foi possível guardar a cópia neste aparelho. Mantenha o aplicativo aberto até confirmar o envio ao banco.');
+      setCloudSyncStatus('error');
     }
 
     if (currentFamily?.id) {
-      pushToCloud(currentFamily.id, dataToSave);
+      void pushToCloud(currentFamily.id, dataToSave);
     }
   };
 
@@ -647,369 +670,115 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setModalData(null);
   };
 
-  // Set of deleted IDs and timestamps to ensure manual deletions persist across cloud merges
-  const deletedRecordIdsRef = React.useRef<Set<string>>(
-    (() => {
-      try {
-        const stored = localStorage.getItem('milkflow_deleted_ids');
-        if (stored) return new Set<string>(JSON.parse(stored));
-      } catch (_) {}
-      return new Set<string>();
-    })()
-  );
-
-  const deletedItemTimestampsRef = React.useRef<Record<string, string>>(
-    (() => {
-      try {
-        const stored = localStorage.getItem('milkflow_deleted_timestamps');
-        if (stored) return JSON.parse(stored);
-      } catch (_) {}
-      return {};
-    })()
-  );
+  // Tombstones belong to this family, never to a global browser-wide list.
+  const deletedItemTimestampsRef = React.useRef<Record<string, string>>(initialHarvested.deletedItemIds);
+  const deletedRecordIdsRef = React.useRef(new Set(Object.keys(initialHarvested.deletedItemIds)));
 
   const recordManualDeletion = (id: string) => {
     deletedRecordIdsRef.current.add(id);
-    const nowIso = new Date().toISOString();
-    deletedItemTimestampsRef.current[id] = nowIso;
-    try {
-      localStorage.setItem('milkflow_deleted_ids', JSON.stringify(Array.from(deletedRecordIdsRef.current)));
-      localStorage.setItem('milkflow_deleted_timestamps', JSON.stringify(deletedItemTimestampsRef.current));
-    } catch (_) {}
+    deletedItemTimestampsRef.current[id] = new Date().toISOString();
   };
 
   const clearManualDeletion = (id: string) => {
     if (!id) return;
     deletedRecordIdsRef.current.delete(id);
     delete deletedItemTimestampsRef.current[id];
-    try {
-      localStorage.setItem('milkflow_deleted_ids', JSON.stringify(Array.from(deletedRecordIdsRef.current)));
-      localStorage.setItem('milkflow_deleted_timestamps', JSON.stringify(deletedItemTimestampsRef.current));
-    } catch (_) {}
   };
 
-  const getModificationTimestamp = (item: any): number => {
-    if (!item) return 0;
-    const raw =
-      item.updatedAt ||
-      item.createdAt ||
-      item.timestamp ||
-      item.extractedAt ||
-      item.startTime ||
-      item.administeredAt ||
-      item.date ||
-      0;
-    const time = new Date(raw).getTime();
-    return isNaN(time) ? 0 : time;
-  };
-
-  const getEventTimestamp = (item: any): number => {
-    if (!item) return 0;
-    const raw =
-      item.timestamp ||
-      item.startTime ||
-      item.extractedAt ||
-      item.administeredAt ||
-      item.updatedAt ||
-      item.createdAt ||
-      item.date ||
-      0;
-    const time = new Date(raw).getTime();
-    return isNaN(time) ? 0 : time;
-  };
-
-  const getItemTimestamp = (item: any): number => {
-    return getModificationTimestamp(item);
-  };
-
-  // Helper to merge lists by id using strict Last-Write-Wins based on modification timestamp
-  const mergeListById = <T extends { id: string }>(
-    localList: T[],
-    incomingList?: T[],
-    deletedMap?: Record<string, string>
-  ): T[] => {
-    const map = new Map<string, T>();
-    const effectiveDeletedMap = {
-      ...deletedItemTimestampsRef.current,
-      ...(deletedMap || {}),
-    };
-
-    // 1. Incorporate local list items (skip if superseded by deletion)
-    if (localList && Array.isArray(localList)) {
-      for (const item of localList) {
-        if (!item || !item.id) continue;
-        if (effectiveDeletedMap[item.id]) {
-          const delTime = new Date(effectiveDeletedMap[item.id]).getTime();
-          if (getModificationTimestamp(item) <= delTime) continue;
-        }
-        map.set(item.id, item);
-      }
-    }
-
-    // 2. Incorporate incoming list items from Supabase / other devices
-    if (incomingList && Array.isArray(incomingList)) {
-      for (const item of incomingList) {
-        if (!item || !item.id) continue;
-        if (effectiveDeletedMap[item.id]) {
-          const delTime = new Date(effectiveDeletedMap[item.id]).getTime();
-          if (getModificationTimestamp(item) <= delTime) continue;
-        }
-
-        const existing = map.get(item.id);
-        if (!existing) {
-          map.set(item.id, item);
-        } else {
-          // Last-Write-Wins: item with newer modification timestamp wins!
-          const existingTime = getModificationTimestamp(existing);
-          const incomingTime = getModificationTimestamp(item);
-          if (incomingTime >= existingTime) {
-            map.set(item.id, item);
-          }
-        }
-      }
-    }
-
-    const result = Array.from(map.values());
-    return result.sort((a: any, b: any) => getEventTimestamp(b) - getEventTimestamp(a));
-  };
-
-  // Multi-device Cloud Sync State
-  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>(IS_STATIC_PAGES || IS_CLOUD_PAGES ? 'offline' : 'synced');
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error'>('offline');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
 
-  // Authoritative State Applier from Cloud / Live Stream - NEVER DESTROYS RECORDS
+  const currentSnapshot = () => ({
+    protocolId: protocolIdRef.current,
+    baby: babyRef.current,
+    batches: batchesRef.current,
+    transactions: transactionsRef.current,
+    feedings: feedingsRef.current,
+    pumpings: pumpingsRef.current,
+    diapers: diapersRef.current,
+    discomforts: discomfortsRef.current,
+    weights: weightsRef.current,
+    sleepLogs: sleepLogsRef.current,
+    medications: medicationsRef.current,
+    medicationLogs: medicationLogsRef.current,
+    diaperStockItems: diaperStockItemsRef.current,
+    diaperStockTransactions: diaperStockTransactionsRef.current,
+    diaperShoppingItems: diaperShoppingItemsRef.current,
+    feedingPhases: feedingPhasesRef.current,
+    auditLogs: auditLogsRef.current,
+    aiInsights: aiInsightsRef.current,
+    caregivers: caregiversRef.current,
+    customReminderIntervalMinutes: customReminderIntervalRef.current,
+    deletedItemIds: deletedItemTimestampsRef.current,
+    lastUpdatedAt: latestSnapshotTime.current,
+  });
+
+  // Receiving a snapshot is not proof that our own pending writes reached the DB.
   const applyIncomingFamilyData = (
-    d: any,
+    raw: any,
     incomingBabies?: BabyProfile[],
     incomingFamily?: Partial<Family>,
     incomingMembers?: FamilyMember[]
   ) => {
+    if (!raw || (incomingFamily?.id && incomingFamily.id !== currentFamily?.id)) return;
+    let merged = mergeFamilySnapshots(currentSnapshot(), raw);
+    try {
+      const cached = localStorage.getItem(familyStorageKey);
+      if (cached) merged = mergeFamilySnapshots(JSON.parse(cached), merged);
+      for (const entry of outbox?.pending() || []) merged = mergeFamilySnapshots(merged, entry.data);
+      localStorage.setItem(familyStorageKey, JSON.stringify(merged));
+    } catch (error) {
+      setCloudSyncError('A cópia local não pôde ser atualizada. Preserve este aparelho e tente sincronizar novamente.');
+      setCloudSyncStatus('error');
+    }
+
     if (incomingBabies || incomingFamily || incomingMembers) {
       syncIncomingFamilyState?.(incomingBabies, incomingFamily, incomingMembers);
     }
-
-    if (!d) return;
-
-    if (IS_CLOUD_PAGES && d.baby?.id) {
-      const incomingAt = getModificationTimestamp(d.baby);
-      const localAt = getModificationTimestamp(babyRef.current);
-      if (incomingAt >= localAt || !localBaby?.id) {
-        const updated = { ...babyRef.current, ...d.baby };
-        babyRef.current = updated;
-        setLocalBaby(updated);
-        updateBabyProfile(updated.id, updated);
+    deletedItemTimestampsRef.current = merged.deletedItemIds;
+    deletedRecordIdsRef.current = new Set(Object.keys(merged.deletedItemIds));
+    latestSnapshotTime.current = merged.lastUpdatedAt || latestSnapshotTime.current;
+    if (merged.baby?.id && merged.baby.id !== 'baby_initial') {
+      babyRef.current = merged.baby;
+      setLocalBaby(merged.baby);
+    }
+    const lists: [string, React.MutableRefObject<any[]>, React.Dispatch<React.SetStateAction<any[]>>][] = [
+      ['batches', batchesRef, setBatches], ['transactions', transactionsRef, setTransactions],
+      ['feedings', feedingsRef, setFeedings], ['pumpings', pumpingsRef, setPumpings],
+      ['diapers', diapersRef, setDiapers], ['discomforts', discomfortsRef, setDiscomforts],
+      ['weights', weightsRef, setWeights], ['sleepLogs', sleepLogsRef, setSleepLogs],
+      ['medications', medicationsRef, setMedications], ['medicationLogs', medicationLogsRef, setMedicationLogs],
+      ['diaperStockItems', diaperStockItemsRef, setDiaperStockItems],
+      ['diaperStockTransactions', diaperStockTransactionsRef, setDiaperStockTransactions],
+      ['diaperShoppingItems', diaperShoppingItemsRef, setDiaperShoppingItems],
+      ['feedingPhases', feedingPhasesRef, setFeedingPhases], ['auditLogs', auditLogsRef, setAuditLogs],
+      ['aiInsights', aiInsightsRef, setAiInsights], ['caregivers', caregiversRef, setCaregivers],
+    ];
+    for (const [key, ref, setter] of lists) {
+      if (Array.isArray(merged[key])) {
+        ref.current = merged[key];
+        setter(merged[key]);
       }
     }
-
-    // Consolidate deleted IDs from incoming payload
-    if (d.deletedItemIds && typeof d.deletedItemIds === 'object') {
-      Object.assign(deletedItemTimestampsRef.current, d.deletedItemIds);
-      Object.keys(d.deletedItemIds).forEach((id) => deletedRecordIdsRef.current.add(id));
-      try {
-        localStorage.setItem('milkflow_deleted_ids', JSON.stringify(Array.from(deletedRecordIdsRef.current)));
-        localStorage.setItem('milkflow_deleted_timestamps', JSON.stringify(deletedItemTimestampsRef.current));
-      } catch (_) {}
+    if (merged.caregivers?.length) {
+      setActiveCaregiver(previous => merged.caregivers.find((c: Caregiver) => c.id === previous?.id) || merged.caregivers[0]);
     }
-
-    if (d.protocolId) {
-      const localManual = localStorage.getItem('milkflow_selected_protocol') as ConservationProtocolId;
-      const targetProto = localManual || d.protocolId;
-      setProtocolIdState(targetProto);
-      protocolIdRef.current = targetProto;
+    if (merged.protocolId) {
+      protocolIdRef.current = merged.protocolId;
+      setProtocolIdState(merged.protocolId);
     }
-
-    // SMART LWW MERGE: Compare timestamps so the latest update across any device wins
-    let hasBatches = Array.isArray(d.batches);
-    const mergedBatches = hasBatches
-      ? mergeListById(batchesRef.current, d.batches, d.deletedItemIds)
-      : batchesRef.current;
-    if (hasBatches) {
-      setBatches(mergedBatches);
-      batchesRef.current = mergedBatches;
+    if (merged.customReminderIntervalMinutes) {
+      customReminderIntervalRef.current = merged.customReminderIntervalMinutes;
+      setCustomReminderIntervalMinutes(merged.customReminderIntervalMinutes);
     }
+  };
 
-    let hasTransactions = Array.isArray(d.transactions);
-    const mergedTransactions = hasTransactions
-      ? mergeListById(transactionsRef.current, d.transactions, d.deletedItemIds)
-      : transactionsRef.current;
-    if (hasTransactions) {
-      setTransactions(mergedTransactions);
-      transactionsRef.current = mergedTransactions;
-    }
-
-    let hasFeedings = Array.isArray(d.feedings);
-    const mergedFeedings = hasFeedings
-      ? mergeListById(feedingsRef.current, d.feedings, d.deletedItemIds)
-      : feedingsRef.current;
-    if (hasFeedings) {
-      setFeedings(mergedFeedings);
-      feedingsRef.current = mergedFeedings;
-    }
-
-    let hasPumpings = Array.isArray(d.pumpings);
-    const mergedPumpings = hasPumpings
-      ? mergeListById(pumpingsRef.current, d.pumpings, d.deletedItemIds)
-      : pumpingsRef.current;
-    if (hasPumpings) {
-      setPumpings(mergedPumpings);
-      pumpingsRef.current = mergedPumpings;
-    }
-
-    let hasDiapers = Array.isArray(d.diapers);
-    const mergedDiapers = hasDiapers
-      ? mergeListById(diapersRef.current, d.diapers, d.deletedItemIds)
-      : diapersRef.current;
-    if (hasDiapers) {
-      setDiapers(mergedDiapers);
-      diapersRef.current = mergedDiapers;
-    }
-
-    let hasDiscomforts = Array.isArray(d.discomforts);
-    const mergedDiscomforts = hasDiscomforts
-      ? mergeListById(discomfortsRef.current, d.discomforts, d.deletedItemIds)
-      : discomfortsRef.current;
-    if (hasDiscomforts) {
-      setDiscomforts(mergedDiscomforts);
-      discomfortsRef.current = mergedDiscomforts;
-    }
-
-    let hasWeights = Array.isArray(d.weights);
-    const mergedWeights = hasWeights
-      ? mergeListById(weightsRef.current, d.weights, d.deletedItemIds)
-      : weightsRef.current;
-    if (hasWeights) {
-      setWeights(mergedWeights);
-      weightsRef.current = mergedWeights;
-    }
-
-    let hasSleepLogs = Array.isArray(d.sleepLogs);
-    const mergedSleepLogs = hasSleepLogs
-      ? mergeListById(sleepLogsRef.current, d.sleepLogs, d.deletedItemIds)
-      : sleepLogsRef.current;
-    if (hasSleepLogs) {
-      setSleepLogs(mergedSleepLogs);
-      sleepLogsRef.current = mergedSleepLogs;
-    }
-
-    let hasMeds = Array.isArray(d.medications);
-    const mergedMeds = hasMeds
-      ? mergeListById(medicationsRef.current, d.medications, d.deletedItemIds)
-      : medicationsRef.current;
-    if (hasMeds) {
-      setMedications(mergedMeds);
-      medicationsRef.current = mergedMeds;
-    }
-
-    let hasMedLogs = Array.isArray(d.medicationLogs);
-    const mergedMedLogs = hasMedLogs
-      ? mergeListById(medicationLogsRef.current, d.medicationLogs, d.deletedItemIds)
-      : medicationLogsRef.current;
-    if (hasMedLogs) {
-      setMedicationLogs(mergedMedLogs);
-      medicationLogsRef.current = mergedMedLogs;
-    }
-
-    let hasDiaperStockItems = Array.isArray(d.diaperStockItems);
-    const mergedDiaperStockItems = hasDiaperStockItems
-      ? mergeListById(diaperStockItemsRef.current, d.diaperStockItems, d.deletedItemIds)
-      : diaperStockItemsRef.current;
-    if (hasDiaperStockItems) {
-      setDiaperStockItems(mergedDiaperStockItems);
-      diaperStockItemsRef.current = mergedDiaperStockItems;
-    }
-
-    let hasDiaperTx = Array.isArray(d.diaperStockTransactions);
-    const mergedDiaperTx = hasDiaperTx
-      ? mergeListById(diaperStockTransactionsRef.current, d.diaperStockTransactions, d.deletedItemIds)
-      : diaperStockTransactionsRef.current;
-    if (hasDiaperTx) {
-      setDiaperStockTransactions(mergedDiaperTx);
-      diaperStockTransactionsRef.current = mergedDiaperTx;
-    }
-
-    let hasDiaperShopping = Array.isArray(d.diaperShoppingItems);
-    const mergedDiaperShopping = hasDiaperShopping
-      ? mergeListById(diaperShoppingItemsRef.current, d.diaperShoppingItems, d.deletedItemIds)
-      : diaperShoppingItemsRef.current;
-    if (hasDiaperShopping) {
-      setDiaperShoppingItems(mergedDiaperShopping);
-      diaperShoppingItemsRef.current = mergedDiaperShopping;
-    }
-
-    let hasFeedingPhases = Array.isArray(d.feedingPhases);
-    const mergedPhases = hasFeedingPhases
-      ? mergeListById(feedingPhasesRef.current, d.feedingPhases, d.deletedItemIds)
-      : feedingPhasesRef.current;
-    if (hasFeedingPhases) {
-      setFeedingPhases(mergedPhases);
-      feedingPhasesRef.current = mergedPhases;
-    }
-
-    let hasAuditLogs = Array.isArray(d.auditLogs);
-    const mergedAudit = hasAuditLogs
-      ? mergeListById(auditLogsRef.current, d.auditLogs, d.deletedItemIds)
-      : auditLogsRef.current;
-    if (hasAuditLogs) {
-      setAuditLogs(mergedAudit);
-      auditLogsRef.current = mergedAudit;
-    }
-
-    if (Array.isArray(d.aiInsights)) {
-      setAiInsights(d.aiInsights);
-      aiInsightsRef.current = d.aiInsights;
-    }
-    if (d.customReminderIntervalMinutes) {
-      setCustomReminderIntervalMinutes(d.customReminderIntervalMinutes);
-      customReminderIntervalRef.current = d.customReminderIntervalMinutes;
-    }
-    if (Array.isArray(d.caregivers) && d.caregivers.length > 0) {
-      const mergedCaregivers = mergeListById(caregiversRef.current, d.caregivers, d.deletedItemIds);
-      setCaregivers(mergedCaregivers);
-      caregiversRef.current = mergedCaregivers;
-      setActiveCaregiver((prev) => mergedCaregivers.find((c: any) => c.id === prev.id) || mergedCaregivers[0]);
-    }
-
-    // Persist full unified state to local storage for instant offline / cache access
-    const unifiedSnapshot = {
-      protocolId: d.protocolId || protocolIdRef.current,
-      batches: mergedBatches,
-      transactions: mergedTransactions,
-      feedings: mergedFeedings,
-      pumpings: mergedPumpings,
-      diapers: mergedDiapers,
-      discomforts: mergedDiscomforts,
-      weights: mergedWeights,
-      sleepLogs: mergedSleepLogs,
-      medications: mergedMeds,
-      medicationLogs: mergedMedLogs,
-      diaperStockItems: mergedDiaperStockItems,
-      diaperStockTransactions: mergedDiaperTx,
-      diaperShoppingItems: mergedDiaperShopping,
-      feedingPhases: mergedPhases,
-      auditLogs: mergedAudit,
-      aiInsights: d.aiInsights || aiInsightsRef.current,
-      caregivers: caregiversRef.current,
-      deletedItemIds: deletedItemTimestampsRef.current,
-      customReminderIntervalMinutes: d.customReminderIntervalMinutes || customReminderIntervalRef.current,
-      lastUpdatedAt: new Date().toISOString(),
-    };
-
-    try {
-      if (!IS_CLOUD_PAGES || currentFamily?.id) {
-        localStorage.setItem(familyStorageKey, JSON.stringify({ ...unifiedSnapshot, baby: babyRef.current }));
-      }
-      if (!IS_CLOUD_PAGES) {
-        localStorage.setItem('milkflow_universal_backup', JSON.stringify(unifiedSnapshot));
-        localStorage.setItem('milkflow_guest_data', JSON.stringify(unifiedSnapshot));
-      }
-    } catch (e) {
-      console.warn('Error caching synced family data locally', e);
-    }
-
-    setLastCloudSyncTime(
-      new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    );
+  const markCloudConfirmed = () => {
+    if (readOnlyLocalMutation.current || outbox?.pending().length) return;
     setCloudSyncStatus('synced');
+    setCloudSyncError(null);
+    setLastCloudSyncTime(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
   };
 
   const restoreAllHistoricalData = (): boolean => {
@@ -1057,302 +826,175 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return true;
   };
 
-  // Function to pull latest data from cloud (for multi-device sync)
-  const pullFromCloud = async (familyId: string) => {
-    if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
-    if (IS_CLOUD_PAGES) {
-      if (!currentUser || !navigator.onLine) { setCloudSyncStatus('offline'); return; }
-      setCloudSyncStatus('syncing');
-      const raw = await directLoadFamilyFromSupabase(familyId);
-      if (!raw) { setCloudSyncStatus('error'); return; }
-      applyIncomingFamilyData(raw.data || raw.familyData || raw, raw.babies, raw.family);
-      setCloudSyncStatus('synced');
-      return;
-    }
-    if (!navigator.onLine) {
-      setCloudSyncStatus('offline');
-      return;
-    }
+  const syncMetadataRef = React.useRef({ family: currentFamily, babies });
+  syncMetadataRef.current = { family: currentFamily, babies };
+
+  const flushPendingWrites = async () => {
+    // Pages remains read-only until writes are validated in the mamei project.
+    // An old outbox or a keyboard-triggered handler must not bypass that gate.
+    if (IS_STATIC_PAGES || IS_CLOUD_PAGES || !outbox || !currentUser) return;
+    if (!navigator.onLine) { setCloudSyncStatus('offline'); return; }
+    const generation = syncGeneration.current;
+    const active = () => syncGeneration.current === generation;
     try {
+      if (!outbox.pending().length) return;
       setCloudSyncStatus('syncing');
-      const res = await fetch(`/api/family/${familyId}/sync`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          if (json.familyData) {
-            applyIncomingFamilyData(json.familyData, json.babies, json.family, json.members);
-          } else if (json.babies || json.family || json.members) {
-            syncIncomingFamilyState?.(json.babies, json.family, json.members);
+      await outbox.flush(async data => {
+        const { family, babies: currentBabies } = syncMetadataRef.current;
+        {
+          // A single server writer performs a compare-and-swap merge in Supabase.
+          // Never race it with a second full-snapshot upsert from the browser.
+          const response = await fetch(`/api/family/${encodeURIComponent(outbox.familyId)}/sync`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ family, babies: currentBabies, data }),
+            signal: AbortSignal.timeout(20000),
+          });
+          const result = await response.json();
+          if (!response.ok || result.success !== true || result.supabaseSynced !== true) {
+            throw new Error('O banco não confirmou o envio. Seus registros permanecem na fila para tentar novamente.');
           }
-          return;
+          if (active() && result.familyData) {
+            applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
+          }
         }
-      }
-      // Fallback directly to Supabase if API endpoint encountered an issue
-      const directSupa = await directLoadFamilyFromSupabase(familyId);
-      if (directSupa) {
-        applyIncomingFamilyData(directSupa.data || directSupa, directSupa.babies, directSupa.family, directSupa.members);
-      }
-    } catch (err) {
-      console.warn('Cloud sync pull notice, attempting direct Supabase query:', err);
-      try {
-        const directSupa = await directLoadFamilyFromSupabase(familyId);
-        if (directSupa) {
-          applyIncomingFamilyData(directSupa.data || directSupa, directSupa.babies, directSupa.family, directSupa.members);
-        }
-      } catch (_) {}
-      setCloudSyncStatus(navigator.onLine ? 'synced' : 'offline');
+      }, active);
+      if (active()) markCloudConfirmed();
+    } catch (error: any) {
+      if (!active()) return;
+      setCloudSyncStatus(navigator.onLine ? 'error' : 'offline');
+      setCloudSyncError(error?.message || 'Envio pendente. Tentaremos novamente automaticamente.');
     }
   };
 
-  // Function to push data to cloud and Supabase
-  const pushToCloud = async (familyId: string, payloadData: any) => {
-    const enrichedPayload = {
-      ...payloadData,
-      deletedItemIds: deletedItemTimestampsRef.current,
-      _clientPushAt: new Date().toISOString(),
-    };
-
-    // Notify same-origin tabs immediately via BroadcastChannel
+  const pullFromCloud = async (familyId: string) => {
+    if (IS_STATIC_PAGES || !currentUser || familyId !== currentFamily?.id) return;
+    if (!navigator.onLine) { setCloudSyncStatus('offline'); return; }
+    const generation = syncGeneration.current;
     try {
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel(`milkflow_sync_${familyId}`);
-        bc.postMessage({
-          type: 'local_mutation',
-          familyData: enrichedPayload,
-          babies: babies && babies.length > 0 ? babies : undefined,
-          family: currentFamily || undefined,
+      if (IS_CLOUD_PAGES) {
+        const raw = await directLoadFamilyFromSupabase(familyId);
+        if (generation !== syncGeneration.current) return;
+        if (!raw) throw new Error('Não foi possível consultar o Supabase. O histórico local foi preservado.');
+        applyIncomingFamilyData(snapshotData(raw), raw.babies, raw.family);
+      } else {
+        const response = await fetch(`/api/family/${encodeURIComponent(familyId)}/sync`, {
+          cache: 'no-store', signal: AbortSignal.timeout(20000),
         });
-        bc.close();
+        const result = await response.json();
+        if (generation !== syncGeneration.current) return;
+        if (!response.ok || result.success !== true) throw new Error('Não foi possível atualizar o histórico.');
+        if (result.familyData) applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
+        if (result.supabaseActive !== true) throw new Error('O servidor está sem confirmação do banco. O histórico local foi preservado.');
       }
-    } catch (_) {}
-
-    if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
-    if (IS_CLOUD_PAGES) {
-      // Initial production release is read-only. The write RPC is intentionally
-      // disabled in Supabase until concurrency and data-integrity tests pass.
-      // Never report a local-only change as synchronized.
-      setCloudSyncStatus('offline');
-      return;
-      /* Future validated write path:
-      if (!currentUser || !navigator.onLine) { setCloudSyncStatus('offline'); return; }
-      setCloudSyncStatus('syncing');
-      const success = await directSaveFamilyToSupabase(familyId, {
-        familyId,
-        family: currentFamily,
-        babies,
-        data: enrichedPayload,
-      });
-      if (!success) { setCloudSyncStatus('error'); return; }
-      setCloudSyncStatus('synced');
-      setLastCloudSyncTime(new Date().toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}));
-      return;
-      */
+      markCloudConfirmed();
+    } catch (error: any) {
+      if (generation !== syncGeneration.current) return;
+      setCloudSyncStatus(navigator.onLine ? 'error' : 'offline');
+      setCloudSyncError(error?.message || 'Não foi possível atualizar o histórico.');
     }
-    if (!navigator.onLine) {
-      setCloudSyncStatus('offline');
+  };
+
+  const pushToCloud = async (familyId: string, payloadData: any) => {
+    if (!currentUser || currentFamily?.id !== familyId) return;
+    if (IS_CLOUD_PAGES) {
+      readOnlyLocalMutation.current = true;
+      setCloudSyncStatus('error');
+      setCloudSyncError('Esta publicação está em modo consulta. Alterações locais foram preservadas, mas o envio ao banco ainda não está habilitado.');
       return;
+    }
+    const enrichedPayload = {
+      ...payloadData, deletedItemIds: { ...deletedItemTimestampsRef.current },
+    };
+    if (!IS_STATIC_PAGES) {
+      try { outbox?.enqueue(enrichedPayload); }
+      catch (error) {
+        setCloudSyncStatus('error');
+        setCloudSyncError('Não foi possível guardar o envio pendente neste aparelho. Mantenha o aplicativo aberto até o banco confirmar.');
+      }
     }
     try {
-      setCloudSyncStatus('syncing');
-
-      // Trigger parallel direct push to Supabase for immediate cloud redundancy
-      directSaveFamilyToSupabase(familyId, {
-        familyId,
-        family: currentFamily,
-        babies,
-        data: enrichedPayload,
-      }).catch((e) => {
-        console.warn('Direct Supabase client background sync notice:', e);
-      });
-
-      const res = await fetch(`/api/family/${familyId}/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          family: currentFamily || undefined,
-          babies: babies && babies.length > 0 ? babies : undefined,
-          data: enrichedPayload,
-        }),
-      });
-      if (res.ok) {
-        setCloudSyncStatus('synced');
-        setLastCloudSyncTime(
-          new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-        );
+      if (typeof BroadcastChannel !== 'undefined') {
+        const channel = new BroadcastChannel(`milkflow_sync_${familyId}`);
+        channel.postMessage({ type: 'local_mutation', familyData: enrichedPayload });
+        channel.close();
       }
-    } catch (err) {
-      console.warn('Cloud push error:', err);
-      setCloudSyncStatus('error');
-    }
+    } catch (_) { /* Cross-tab transport is optional; the durable queue remains. */ }
+    if (IS_STATIC_PAGES) { setCloudSyncStatus('offline'); return; }
+    await flushPendingWrites();
   };
 
   const forceCloudSync = async () => {
-    if (currentFamily?.id) {
-      await pullFromCloud(currentFamily.id);
-    }
+    if (!currentFamily?.id) return;
+    await flushPendingWrites();
+    await pullFromCloud(currentFamily.id);
   };
 
-  // ⚡ LIVE REAL-TIME SSE, SUPABASE REALTIME WEBSOCKET, BROADCASTCHANNEL & AUTO-SYNC
+  // Refresh and retry on reconnect, foregrounding, and a bounded fallback timer.
+  // Cleanup invalidates late responses from a previous user/family or StrictMode run.
   useEffect(() => {
-    // 0. Immediately re-harvest and hydrate all local data when family or user changes
-    const localHarvested = harvestAndMergeAllUserData(currentFamily?.id);
-    applyIncomingFamilyData(localHarvested);
+    const generation = ++syncGeneration.current;
+    const familyId = currentFamily?.id;
+    if (!familyId || !currentUser?.id) return () => { ++syncGeneration.current; };
+    const active = () => syncGeneration.current === generation;
+    applyIncomingFamilyData(harvestAndMergeAllUserData(familyId));
+    const refresh = async () => {
+      if (!active()) return;
+      await flushPendingWrites();
+      if (active()) await pullFromCloud(familyId);
+    };
+    const channel = typeof BroadcastChannel !== 'undefined'
+      ? new BroadcastChannel('milkflow_sync_' + familyId) : null;
+    if (channel) channel.onmessage = event => {
+      if (active() && event.data?.familyData) applyIncomingFamilyData(event.data.familyData);
+    };
+    if (IS_STATIC_PAGES) return () => { ++syncGeneration.current; channel?.close(); };
 
-    if (IS_CLOUD_PAGES) {
-      if (!currentUser?.id || !currentFamily?.id) return;
-      const familyId = currentFamily.id;
-      void pullFromCloud(familyId);
-      const unsubscribe = subscribeToFamilyInSupabase(familyId, raw => {
-        applyIncomingFamilyData(raw.data || raw.familyData || raw, raw.babies, raw.family);
-      });
-      const channel = typeof BroadcastChannel !== 'undefined'
-        ? new BroadcastChannel('milkflow_sync_' + familyId) : null;
-      if (channel) {
-        channel.onmessage = ev => {
-          if (ev.data?.familyData) applyIncomingFamilyData(ev.data.familyData, ev.data.babies, ev.data.family);
-        };
-      }
-      // Realtime may be disabled on the project. Use a moderate fallback,
-      // not the legacy 3-second polling loop.
-      const poll = window.setInterval(() => {
-        if (document.visibilityState === 'visible' && navigator.onLine) void pullFromCloud(familyId);
-      }, 30000);
-      const onFocus = () => { if (navigator.onLine) void pullFromCloud(familyId); };
-      window.addEventListener('focus', onFocus);
-      return () => {
-        unsubscribe();
-        channel?.close();
-        window.clearInterval(poll);
-        window.removeEventListener('focus', onFocus);
-      };
-    }
-
-    if (IS_STATIC_PAGES) {
-      // Pages has no trusted backend. Synchronize open tabs, but never remote devices.
-      if (!currentFamily?.id || typeof BroadcastChannel === 'undefined') return;
-      const channel = new BroadcastChannel('milkflow_sync_' + currentFamily.id);
-      channel.onmessage = (event) => {
-        if (event.data?.familyData) {
-          applyIncomingFamilyData(event.data.familyData, event.data.babies, event.data.family, event.data.members);
-        } else if (event.data?.babies || event.data?.family || event.data?.members) {
-          syncIncomingFamilyState?.(event.data.babies, event.data.family, event.data.members);
-        }
-      };
-      return () => channel.close();
-    }
-
-    if (!currentFamily?.id) return;
-
-    // 1. Initial snapshot pull
-    pullFromCloud(currentFamily.id);
-
-    // 2. Supabase Direct Realtime Channel Subscription (Instant Cloud Notification)
-    const unsubscribeSupabase = subscribeToFamilyInSupabase(currentFamily.id, (incomingVal) => {
-      if (incomingVal) {
-        applyIncomingFamilyData(
-          incomingVal.data || incomingVal,
-          incomingVal.babies,
-          incomingVal.family,
-          incomingVal.members
-        );
-      }
-    });
-
-    // 3. BroadcastChannel for instant cross-tab sync on same device
-    let broadcastChannel: BroadcastChannel | null = null;
-    try {
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        broadcastChannel = new BroadcastChannel(`milkflow_sync_${currentFamily.id}`);
-        broadcastChannel.onmessage = (ev) => {
-          if (ev.data?.familyData) {
-            applyIncomingFamilyData(ev.data.familyData, ev.data.babies, ev.data.family, ev.data.members);
-          } else if (ev.data?.babies || ev.data?.family || ev.data?.members) {
-            syncIncomingFamilyState?.(ev.data.babies, ev.data.family, ev.data.members);
-          }
-        };
-      }
-    } catch (e) {
-      console.warn('BroadcastChannel not supported', e);
-    }
-
-    // 4. Real-time Live SSE Connection across all devices
-    let eventSource: EventSource | null = null;
-    let reconnectTimeout: any = null;
-
-    const connectSse = () => {
-      if (eventSource) {
-        eventSource.close();
-      }
-
+    // One-time recovery of this family's pre-outbox cache. The server merges by
+    // record ID; re-sending known records is idempotent and cannot clear history.
+    if (!IS_CLOUD_PAGES) {
+      const recoveryKey = 'milkflow_outbox_migrated_v1:' + familyId;
       try {
-        eventSource = new EventSource(`/api/family/${currentFamily.id}/events`);
-
-        eventSource.onopen = () => {
-          setCloudSyncStatus('synced');
-        };
-
-        eventSource.onmessage = (event) => {
-          try {
-            if (!event.data) return;
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'snapshot' || msg.type === 'data_updated') {
-              if (msg.familyData) {
-                applyIncomingFamilyData(msg.familyData, msg.babies, msg.family, msg.members);
-              } else if (msg.babies || msg.family || msg.members) {
-                syncIncomingFamilyState?.(msg.babies, msg.family, msg.members);
-              }
-            }
-          } catch (e) {
-            console.warn('SSE message parse error', e);
-          }
-        };
-
-        eventSource.onerror = (e) => {
-          setCloudSyncStatus(navigator.onLine ? 'syncing' : 'offline');
-          eventSource?.close();
-          clearTimeout(reconnectTimeout);
-          reconnectTimeout = setTimeout(connectSse, 2000);
-        };
-      } catch (err) {
-        console.warn('Could not initialize EventSource stream', err);
-      }
-    };
-
-    connectSse();
-
-    // 5. Periodic fallback poll every 3 seconds & on app focus / visibility change
-    const interval = setInterval(() => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-        pullFromCloud(currentFamily.id);
-      }
-    }, 3000);
-
-    const onFocusOrVisible = () => {
-      if (document.visibilityState === 'visible') {
-        pullFromCloud(currentFamily.id);
-        if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-          connectSse();
+        if (!localStorage.getItem(recoveryKey)) {
+          const cached = localStorage.getItem(familyStorageKey);
+          if (cached) outbox?.enqueue(snapshotData(JSON.parse(cached)));
+          localStorage.setItem(recoveryKey, 'true');
         }
+      } catch (error) {
+        setCloudSyncError('A recuperação de registros pendentes ainda não foi concluída.');
+        setCloudSyncStatus('error');
       }
+    }
+    void refresh();
+    const unsubscribe = subscribeToFamilyInSupabase(familyId, raw => {
+      if (active()) applyIncomingFamilyData(snapshotData(raw), raw.babies, raw.family);
+    });
+    let events: EventSource | null = null;
+    if (!IS_CLOUD_PAGES && typeof EventSource !== 'undefined') {
+      events = new EventSource(`/api/family/${encodeURIComponent(familyId)}/events`);
+      events.onmessage = event => {
+        if (!active()) return;
+        try {
+          const result = JSON.parse(event.data);
+          if (result.familyData) applyIncomingFamilyData(result.familyData, result.babies, result.family, result.members);
+        } catch (_) { /* Fallback polling will retry. */ }
+      };
+    }
+    const onForeground = () => {
+      if (document.visibilityState === 'visible') void refresh();
     };
-
-    window.addEventListener('focus', onFocusOrVisible);
-    window.addEventListener('visibilitychange', onFocusOrVisible);
-    window.addEventListener('online', onFocusOrVisible);
-
+    const onOffline = () => { if (active()) setCloudSyncStatus('offline'); };
+    const poll = window.setInterval(onForeground, 15000);
+    window.addEventListener('online', onForeground);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('focus', onForeground);
+    document.addEventListener('visibilitychange', onForeground);
     return () => {
-      unsubscribeSupabase();
-      clearInterval(interval);
-      clearTimeout(reconnectTimeout);
-      if (broadcastChannel) {
-        broadcastChannel.close();
-      }
-      if (eventSource) {
-        eventSource.close();
-      }
-      window.removeEventListener('focus', onFocusOrVisible);
-      window.removeEventListener('visibilitychange', onFocusOrVisible);
-      window.removeEventListener('online', onFocusOrVisible);
+      ++syncGeneration.current;
+      unsubscribe(); channel?.close(); events?.close(); window.clearInterval(poll);
+      window.removeEventListener('online', onForeground);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('focus', onForeground);
+      document.removeEventListener('visibilitychange', onForeground);
     };
   }, [currentFamily?.id, currentUser?.id]);
 
@@ -1984,7 +1626,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return recentDuplicate;
     }
 
-    const feedingId = `feed_${Date.now()}`;
+    const feedingId = uniqueRecordId('feed');
     let finalBatchIdsUsed: string[] = data.batchIdsUsed || [];
     let finalAllocations: BatchAllocation[] | undefined = data.batchesUsedDetails;
     let updatedBatches = batchesRef.current;
@@ -2585,7 +2227,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const nowIso = new Date().toISOString();
-    const recordId = data.id || `diaper_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    const recordId = data.id || uniqueRecordId('diaper');
 
     clearManualDeletion(recordId);
 
@@ -3576,6 +3218,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         restoreAllHistoricalData,
         persistFamilyData,
         cloudSyncStatus,
+        cloudSyncError,
         lastCloudSyncTime,
         forceCloudSync,
       }}

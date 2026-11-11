@@ -2,14 +2,65 @@ name: Verify MilkFlow public URL
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
+    branches: [main]
     paths:
       - '.github/workflows/verify-milk-pages.yml'
+      - 'tests/browser_persistence.py'
+      - 'src/context/**'
+      - 'src/lib/**'
+      - 'src/App.tsx'
+      - 'src/components/Header.tsx'
 
 permissions:
   contents: read
 
+concurrency:
+  group: milk-verification-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  persistence-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      - run: bun install --frozen-lockfile
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated browser test runtime
+        run: |
+          python -m pip install playwright==1.56.0
+          # Hosted runners normally already include Chrome. Avoid downloading
+          # another browser and its OS packages when an installation is present.
+          if command -v google-chrome > /dev/null; then
+            printf 'MILK_BROWSER_EXECUTABLE=%s\n' "$(command -v google-chrome)" >> "$GITHUB_ENV"
+          elif command -v chromium > /dev/null; then
+            printf 'MILK_BROWSER_EXECUTABLE=%s\n' "$(command -v chromium)" >> "$GITHUB_ENV"
+          else
+            python -m playwright install --with-deps chromium
+          fi
+      - name: Verify records, failures, retries and family isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Frontend only. All API requests are mocked with synthetic records;
+          # the test never starts server.ts or connects to Supabase.
+          bunx vite --host 127.0.0.1 --port 5178 --strictPort > "$RUNNER_TEMP/milk-vite.log" 2>&1 &
+          vite_pid=$!
+          trap 'kill "$vite_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:5178/ > /dev/null; then break; fi
+            sleep 0.25
+          done
+          python tests/browser_persistence.py --chromium "${MILK_BROWSER_EXECUTABLE:-}"
+
   verify-public-url:
     runs-on: ubuntu-latest
     steps:

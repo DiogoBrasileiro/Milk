@@ -1,6 +1,7 @@
 import { IS_STATIC_PAGES } from '../lib/deployment';
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { AuthUser, Family, FamilyMember, BabyProfile, UserRole } from '../types';
+import { mergeFamilySnapshots, readPendingFamilyWrites } from '../lib/familyPersistence';
 
 export interface AuthContextType {
   // Available only in the authenticated GitHub Pages edition.
@@ -46,6 +47,28 @@ export const AuthContext = createContext<AuthContextType | undefined>(undefined)
 const AUTH_STORAGE_KEY = 'milkflow_auth_session_v2';
 const USERS_STORAGE_KEY = 'milkflow_users_db_v2';
 
+function preserveFamilyCache(familyId: string, incoming: any): void {
+  const key = `milkflow_family_data_${familyId}`;
+  try {
+    // Read after the network response, not before it. Records may have been
+    // added or edited locally while login/session restoration was in flight.
+    const raw = localStorage.getItem(key);
+    const existing = raw ? JSON.parse(raw) : {};
+    if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+      throw new Error('Cache familiar inválido; preservado para recuperação.');
+    }
+    let merged = mergeFamilySnapshots(existing, incoming);
+    for (const pending of readPendingFamilyWrites(localStorage, familyId)) {
+      merged = mergeFamilySnapshots(merged, pending.data);
+    }
+    localStorage.setItem(key, JSON.stringify(merged));
+  } catch (error) {
+    // A failed cache read is not evidence that the family has no records.
+    // Keep its original bytes instead of replacing it with a remote snapshot.
+    console.warn('Não foi possível atualizar o histórico local da família.', error);
+  }
+}
+
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [currentFamily, setCurrentFamily] = useState<Family | null>(null);
@@ -56,6 +79,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // Initialize from local storage session & ensure cloud synchronization
   useEffect(() => {
+    let active = true;
     const initAuth = async () => {
       try {
         const sessionJson = localStorage.getItem(AUTH_STORAGE_KEY) || localStorage.getItem('milkflow_auth_session');
@@ -88,49 +112,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             })
               .then((res) => res.json())
               .then((cloudData) => {
+                if (!active) return;
                 if (cloudData && cloudData.success && cloudData.family?.pairingCode) {
                   setCurrentFamily((prev) =>
-                    prev ? { ...prev, pairingCode: cloudData.family.pairingCode } : cloudData.family
+                    prev?.id === session.family.id ? { ...prev, pairingCode: cloudData.family.pairingCode } : prev
                   );
                 }
                 if (cloudData && cloudData.familyData) {
-                  try {
-                    const existingRaw = localStorage.getItem(`milkflow_family_data_${session.family.id}`);
-                    const existing = existingRaw ? JSON.parse(existingRaw) : {};
-                    const mergeById = (a: any[] = [], b: any[] = []) => {
-                      const map = new Map<string, any>();
-                      [...a, ...b].forEach((item) => {
-                        if (item && item.id) {
-                          const existing = map.get(item.id);
-                          if (!existing) {
-                            map.set(item.id, item);
-                          } else {
-                            const extTime = new Date(existing.updatedAt || existing.createdAt || existing.timestamp || 0).getTime();
-                            const incomingTime = new Date(item.updatedAt || item.createdAt || item.timestamp || 0).getTime();
-                            if (incomingTime >= extTime) map.set(item.id, item);
-                          }
-                        }
-                      });
-                      return Array.from(map.values()).sort((x, y) => {
-                        const tX = new Date(x.timestamp || x.startTime || x.extractedAt || x.administeredAt || x.createdAt || 0).getTime();
-                        const tY = new Date(y.timestamp || y.startTime || y.extractedAt || y.administeredAt || y.createdAt || 0).getTime();
-                        return tY - tX;
-                      });
-                    };
-
-                    const merged = {
-                      ...existing,
-                      ...cloudData.familyData,
-                      batches: mergeById(existing.batches, cloudData.familyData.batches),
-                      feedings: mergeById(existing.feedings, cloudData.familyData.feedings),
-                      pumpings: mergeById(existing.pumpings, cloudData.familyData.pumpings),
-                      diapers: mergeById(existing.diapers, cloudData.familyData.diapers),
-                      discomforts: mergeById(existing.discomforts, cloudData.familyData.discomforts),
-                      weights: mergeById(existing.weights, cloudData.familyData.weights),
-                      sleepLogs: mergeById(existing.sleepLogs, cloudData.familyData.sleepLogs),
-                    };
-                    localStorage.setItem(`milkflow_family_data_${session.family.id}`, JSON.stringify(merged));
-                  } catch (_) {}
+                  preserveFamilyCache(session.family.id, cloudData.familyData);
                 }
               })
               .catch((e) => console.warn('Background session sync to cloud warning', e));
@@ -148,6 +137,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     initAuth();
+    return () => { active = false; };
   }, []);
 
   // Save active session
@@ -269,7 +259,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // Save initial family data if provided
       if (data.familyData) {
-        localStorage.setItem(`milkflow_family_data_${family.id}`, JSON.stringify(data.familyData));
+        preserveFamilyCache(family.id, data.familyData);
       }
 
       setCurrentUser(user);
@@ -369,7 +359,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       // Restore synchronized cloud family data to local cache
       if (data.familyData) {
-        localStorage.setItem(`milkflow_family_data_${family.id}`, JSON.stringify(data.familyData));
+        preserveFamilyCache(family.id, data.familyData);
       }
 
       setCurrentUser(user);
@@ -449,7 +439,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       ];
 
       if (data.familyData) {
-        localStorage.setItem(`milkflow_family_data_${family.id}`, JSON.stringify(data.familyData));
+        preserveFamilyCache(family.id, data.familyData);
       }
 
       setCurrentUser(user);

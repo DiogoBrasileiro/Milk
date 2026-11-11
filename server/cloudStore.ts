@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { mergeDeletionMaps, mergeFamilySnapshots, mergeRecordLists } from '../src/lib/familyPersistence';
 
 interface CloudUser {
   id: string;
@@ -103,41 +104,11 @@ export function mergeListsLWW<T extends { id: string }>(
   incomingList?: T[],
   deletedMap?: Record<string, string>
 ): T[] {
-  const map = new Map<string, T>();
-
-  if (Array.isArray(existingList)) {
-    for (const item of existingList) {
-      if (!item || !item.id) continue;
-      if (deletedMap && deletedMap[item.id]) {
-        const delTime = new Date(deletedMap[item.id]).getTime();
-        if (getModificationTimestamp(item) <= delTime) continue;
-      }
-      map.set(item.id, item);
-    }
-  }
-
-  if (Array.isArray(incomingList)) {
-    for (const item of incomingList) {
-      if (!item || !item.id) continue;
-      if (deletedMap && deletedMap[item.id]) {
-        const delTime = new Date(deletedMap[item.id]).getTime();
-        if (getModificationTimestamp(item) <= delTime) continue;
-      }
-      const existing = map.get(item.id);
-      if (!existing) {
-        map.set(item.id, item);
-      } else {
-        const existingTime = getModificationTimestamp(existing);
-        const incomingTime = getModificationTimestamp(item);
-        if (incomingTime >= existingTime) {
-          map.set(item.id, item);
-        }
-      }
-    }
-  }
-
-  const result = Array.from(map.values());
-  return result.sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
+  return mergeRecordLists(
+    Array.isArray(existingList) ? existingList : [],
+    Array.isArray(incomingList) ? incomingList : [],
+    deletedMap,
+  );
 }
 
 interface DatabaseSchema {
@@ -282,8 +253,13 @@ class CloudStore {
     try {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        if (raw.trim()) {
-          this.db = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        if (!parsed || ['users', 'families', 'babies', 'familyData'].some(key =>
+          !parsed[key] || typeof parsed[key] !== 'object' || Array.isArray(parsed[key]))) {
+          throw new Error('Invalid local database structure.');
+        }
+        {
+          this.db = parsed;
           // Ensure all families have pairing code
           let hasChanges = false;
           if (this.db.families) {
@@ -302,18 +278,28 @@ class CloudStore {
       this.ensureSeedAccount641306();
       this.isLoaded = true;
     } catch (err) {
-      console.error('Error reading cloud database from disk:', err);
-      this.ensureSeedAccount641306();
-      this.isLoaded = true;
+      // Starting from an empty seed after a parse/read failure overwrites the
+      // only local copy. Stop instead and leave the original file untouched.
+      console.error('Local database could not be loaded; its file was preserved.');
+      throw new Error('Não foi possível abrir o banco local. O arquivo original foi preservado.');
     }
   }
 
   private saveToDisk() {
+    const temporary = `${DB_FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
     try {
       this.ensureDataDir();
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.db, null, 2), 'utf-8');
+      const fd = fs.openSync(temporary, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(this.db, null, 2), 'utf-8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(temporary, DB_FILE);
     } catch (err) {
-      console.error('Error saving cloud database to disk:', err);
+      try { fs.unlinkSync(temporary); } catch { /* Original file remains intact. */ }
+      throw new Error('Não foi possível confirmar a gravação no banco local.');
     }
   }
 
@@ -625,10 +611,7 @@ class CloudStore {
     const incoming = payload.data || {};
 
     // Consolidate deletedItemIds map
-    const mergedDeletedMap: Record<string, string> = {
-      ...(currentData.deletedItemIds || {}),
-      ...(incoming.deletedItemIds || {}),
-    };
+    const mergedDeletedMap = mergeDeletionMaps(currentData.deletedItemIds, incoming.deletedItemIds);
 
     // Merge babies
     if (payload.babies) {
@@ -644,63 +627,39 @@ class CloudStore {
     }
 
     const updatedData: CloudFamilyData = {
-      ...currentData,
-      ...incoming,
-      protocolId: incoming.protocolId !== undefined ? incoming.protocolId : currentData.protocolId || 'brasil_ms',
-      batches: mergeListsLWW(currentData.batches, incoming.batches, mergedDeletedMap),
-      transactions: mergeListsLWW(currentData.transactions, incoming.transactions, mergedDeletedMap),
-      feedings: mergeListsLWW(currentData.feedings, incoming.feedings, mergedDeletedMap),
-      pumpings: mergeListsLWW(currentData.pumpings, incoming.pumpings, mergedDeletedMap),
-      diapers: mergeListsLWW(currentData.diapers, incoming.diapers, mergedDeletedMap),
-      discomforts: mergeListsLWW(currentData.discomforts, incoming.discomforts, mergedDeletedMap),
-      weights: mergeListsLWW(currentData.weights, incoming.weights, mergedDeletedMap),
-      sleepLogs: mergeListsLWW(currentData.sleepLogs, incoming.sleepLogs, mergedDeletedMap),
-      medications: mergeListsLWW(currentData.medications, incoming.medications, mergedDeletedMap),
-      medicationLogs: mergeListsLWW(currentData.medicationLogs, incoming.medicationLogs, mergedDeletedMap),
-      diaperStockItems: mergeListsLWW(currentData.diaperStockItems, incoming.diaperStockItems, mergedDeletedMap),
-      diaperStockTransactions: mergeListsLWW(currentData.diaperStockTransactions, incoming.diaperStockTransactions, mergedDeletedMap),
-      diaperShoppingItems: mergeListsLWW(currentData.diaperShoppingItems, incoming.diaperShoppingItems, mergedDeletedMap),
-      feedingPhases: mergeListsLWW(currentData.feedingPhases, incoming.feedingPhases, mergedDeletedMap),
-      auditLogs: mergeListsLWW(currentData.auditLogs, incoming.auditLogs, mergedDeletedMap),
-      aiInsights: incoming.aiInsights !== undefined ? incoming.aiInsights : currentData.aiInsights || [],
-      caregivers: mergeListsLWW(currentData.caregivers, incoming.caregivers, mergedDeletedMap),
-      deletedItemIds: mergedDeletedMap,
-      customReminderIntervalMinutes:
-        incoming.customReminderIntervalMinutes !== undefined
-          ? incoming.customReminderIntervalMinutes
-          : currentData.customReminderIntervalMinutes || 165,
+      ...mergeFamilySnapshots(currentData, incoming),
       familyId,
       lastUpdatedAt: new Date().toISOString(),
     };
 
     // Enforce Invariants & Sanitization across all domain entities
     if (Array.isArray(updatedData.batches)) {
-      updatedData.batches = updatedData.batches.map((b) => ({
+      updatedData.batches = updatedData.batches.map((b) => b && typeof b === 'object' ? ({
         ...b,
         familyId,
         currentVolumeMl: Math.max(0, b.currentVolumeMl || 0),
-      }));
+      }) : b);
     }
 
     if (Array.isArray(updatedData.diaperStockItems)) {
-      updatedData.diaperStockItems = updatedData.diaperStockItems.map((item) => ({
+      updatedData.diaperStockItems = updatedData.diaperStockItems.map((item) => item && typeof item === 'object' ? ({
         ...item,
         familyId,
         quantityCurrent: Math.max(0, item.quantityCurrent || 0),
-      }));
+      }) : item);
     }
 
     if (Array.isArray(updatedData.feedings)) {
-      updatedData.feedings = updatedData.feedings.map((f) => ({
+      updatedData.feedings = updatedData.feedings.map((f) => f && typeof f === 'object' ? ({
         ...f,
         familyId,
         consumedMl: f.offeredMl ? Math.min(f.consumedMl || 0, f.offeredMl) : f.consumedMl,
-      }));
+      }) : f);
     }
 
     const enforceFamilyIdOnList = (list?: any[]) => {
       if (!Array.isArray(list)) return list;
-      return list.map((item) => (item ? { ...item, familyId } : item));
+      return list.map((item) => (item && typeof item === 'object' ? { ...item, familyId } : item));
     };
 
     updatedData.transactions = enforceFamilyIdOnList(updatedData.transactions);

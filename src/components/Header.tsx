@@ -287,12 +287,14 @@ export const Header: React.FC = () => {
                 ? 'Sincronizando com a nuvem e outros aparelhos...'
                 : cloudSyncStatus === 'offline'
                 ? 'Offline - Os dados serão sincronizados assim que a conexão voltar'
+                : cloudSyncStatus === 'error'
+                ? 'Envio pendente: o banco ainda não confirmou a gravação. Clique para tentar novamente.'
                 : `⚡ Sincronismo em Tempo Real Ativo! Última atualização às ${lastCloudSyncTime || 'agora'}. Clique para forçar atualização.`
             }
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl text-[10px] font-bold transition-all border ${
               cloudSyncStatus === 'syncing' || isManualSyncing
                 ? 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                : cloudSyncStatus === 'offline'
+                : cloudSyncStatus === 'offline' || cloudSyncStatus === 'error'
                 ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
                 : isNightMode
                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
@@ -304,10 +306,10 @@ export const Header: React.FC = () => {
                 <RefreshCw className="w-3 h-3 animate-spin text-blue-400 shrink-0" />
                 <span className="hidden xs:inline">Sincronizando</span>
               </>
-            ) : cloudSyncStatus === 'offline' ? (
+            ) : cloudSyncStatus === 'offline' || cloudSyncStatus === 'error' ? (
               <>
                 <CloudOff className="w-3 h-3 text-amber-400 shrink-0" />
-                <span className="hidden xs:inline">Offline</span>
+                <span>{cloudSyncStatus === 'error' ? 'Pendente' : 'Offline'}</span>
               </>
             ) : (
               <>

@@ -1,21 +1,21 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { cloudStore } from './server/cloudStore';
+import { familySnapshotData } from './server/familyPersistence';
 import {
   testSupabaseHealth,
   syncFamilyDataToSupabase,
+  persistFamilyDataToSupabase,
   loadFamilyDataFromSupabase,
   getSupabaseSchemaSql,
   updateSupabaseCredentials,
   SUPABASE_CONFIG,
 } from './server/supabase';
 
-dotenv.config();
-
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT ?? 3000);
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -269,18 +269,20 @@ app.get('/api/family/:familyId/sync', async (req, res) => {
     const { familyId } = req.params;
     if (!familyId) return res.status(400).json({ error: 'Family ID obrigatório' });
 
-    // Always attempt to hydrate from Supabase database to ensure cross-device consistency
+    let supabaseActive = false;
+    // A failed read preserves the local copy, but must not claim cloud success.
     try {
       const supaData = await loadFamilyDataFromSupabase(familyId);
       if (supaData) {
         cloudStore.saveFamilyData(familyId, {
           family: supaData.family,
           babies: supaData.babies,
-          data: supaData.data || supaData,
+          data: familySnapshotData(supaData),
         });
+        supabaseActive = true;
       }
     } catch (e) {
-      console.warn('Supabase fetch notice on GET sync:', e);
+      console.warn('Supabase family read was not confirmed.');
     }
 
     const result = cloudStore.getFamilyData(familyId);
@@ -291,7 +293,7 @@ app.get('/api/family/:familyId/sync', async (req, res) => {
       babies: result.babies,
       familyData: result.familyData,
       serverTime: new Date().toISOString(),
-      supabaseActive: true,
+      supabaseActive,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -306,56 +308,49 @@ app.post('/api/family/:familyId/sync', async (req, res) => {
 
     if (!familyId) return res.status(400).json({ error: 'Family ID obrigatório' });
 
-    // 1. Pull Supabase first to merge any concurrent updates from other devices
-    try {
-      const supaData = await loadFamilyDataFromSupabase(familyId);
-      if (supaData) {
-        cloudStore.saveFamilyData(familyId, {
-          family: supaData.family,
-          babies: supaData.babies,
-          data: supaData.data || supaData,
-        });
-      }
-    } catch (e) {
-      console.warn('Pre-merge Supabase notice:', e);
-    }
-
-    // 2. Merge incoming payload with Last-Write-Wins
+    // Keep a durable local copy while Supabase is unavailable.
     const updatedData = cloudStore.saveFamilyData(familyId, { family, babies, data });
     const fullFamilyInfo = cloudStore.getFamilyData(familyId);
 
-    // 3. Persist authoritative merged state to Supabase
-    try {
-      await syncFamilyDataToSupabase(familyId, {
-        familyId,
-        family: fullFamilyInfo.family,
-        babies: fullFamilyInfo.babies,
-        data: updatedData,
-        syncedAt: new Date().toISOString(),
-      });
-    } catch (e: any) {
-      console.warn('Supabase sync warning:', e?.message);
-    }
-
-    // 4. Instantly notify all connected devices of this family in real-time
-    broadcastFamilyUpdate(familyId, {
-      type: 'data_updated',
+    // The persistence adapter re-reads and merges on every CAS conflict. It
+    // rejects network/RLS/write errors instead of acknowledging a local save.
+    const committed = await persistFamilyDataToSupabase(familyId, {
+      familyId,
       family: fullFamilyInfo.family,
       babies: fullFamilyInfo.babies,
-      familyData: updatedData,
+      data: updatedData,
+    });
+    const committedData = familySnapshotData(committed);
+    cloudStore.saveFamilyData(familyId, {
+      family: committed.family,
+      babies: committed.babies,
+      data: committedData,
+    });
+
+    // Publish only the snapshot confirmed by the database, not an unrelated
+    // request that may still be pending in this process's local cache.
+    broadcastFamilyUpdate(familyId, {
+      type: 'data_updated',
+      family: committed.family,
+      babies: committed.babies,
+      familyData: committedData,
       serverTime: new Date().toISOString(),
     });
 
     return res.json({
       success: true,
-      family: fullFamilyInfo.family,
-      babies: fullFamilyInfo.babies,
-      familyData: updatedData,
+      family: committed.family,
+      babies: committed.babies,
+      familyData: committedData,
       serverTime: new Date().toISOString(),
       supabaseSynced: true,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(503).json({
+      success: false,
+      supabaseSynced: false,
+      error: 'Gravação no Supabase não confirmada. Os registros pendentes serão reenviados.',
+    });
   }
 });
 
@@ -454,8 +449,10 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MilkFlow Baby server listening on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    const address = server.address();
+    const port = address && typeof address !== 'string' ? address.port : PORT;
+    console.log(`MilkFlow Baby server listening on http://0.0.0.0:${port}`);
   });
 }
 

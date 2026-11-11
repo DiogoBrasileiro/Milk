@@ -70,22 +70,17 @@ export async function directSaveFamilyToSupabase(familyId: string, familyData: a
   try {
     const client = getClientSupabase();
     if (IS_CLOUD_PAGES) {
-      const { error } = await client.rpc('milkflow_merge_snapshot', {
+      const { data, error } = await client.rpc('milkflow_merge_snapshot', {
         p_family_id: familyId,
         p_snapshot: familyData,
-      });
+      }).abortSignal(AbortSignal.timeout(20000));
       if (error) throw error;
+      if (data?.ok !== true) throw new Error('O Supabase não confirmou a gravação.');
       return true;
     }
-    const { error } = await client
-      .from('milkflow_store')
-      .upsert({
-        key: 'family_data_' + familyId,
-        value: { ...familyData, _syncedAt: new Date().toISOString() },
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' });
-    if (error) throw error;
-    return true;
+    // The hosted edition has one server-side CAS writer. A parallel upsert
+    // here could erase records that another device has just saved.
+    return false;
   } catch (error) {
     console.warn('Não foi possível salvar no Supabase:', error);
     return false;
@@ -100,6 +95,7 @@ export async function directLoadFamilyFromSupabase(familyId: string): Promise<an
       .from('milkflow_store')
       .select('value')
       .eq('key', 'family_data_' + familyId)
+      .abortSignal(AbortSignal.timeout(20000))
       .single();
     if (error) throw error;
     return data?.value ?? null;

@@ -1,8 +1,9 @@
-import React, { ReactNode, useCallback, useEffect, useState } from 'react';
+import React, { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { AuthContext, AuthContextType } from './AuthContext';
 import { getClientSupabase } from '../lib/supabaseClient';
 import { normalizeCloudSnapshot } from '../lib/cloudSnapshot';
+import { mergeFamilySnapshots, readPendingFamilyWrites } from '../lib/familyPersistence';
 import type { AuthUser, BabyProfile, Family, FamilyMember, UserRole } from '../types';
 
 type Membership = { family_id: string; role: UserRole; display_name: string | null };
@@ -31,8 +32,13 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [cloudUserId, setCloudUserId] = useState<string | null>(null);
   const [cloudAuthEmail, setCloudAuthEmail] = useState<string | null>(null);
   const [cloudAuthError, setCloudAuthError] = useState<string | null>(null);
+  const verifiedIdentity = useRef<{ userId: string; familyId: string } | null>(null);
+  const hydrationGeneration = useRef(0);
+  const hydratingUserId = useRef<string | null | undefined>(undefined);
+  const mounted = useRef(true);
 
   const clearIdentity = useCallback(() => {
+    verifiedIdentity.current = null;
     setCurrentUser(null);
     setCurrentFamily(null);
     setBabies([]);
@@ -40,21 +46,44 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
     setFamilyMembers([]);
   }, []);
 
+  const clearSession = useCallback(() => {
+    // A pending request must never restore an account after logout.
+    hydrationGeneration.current += 1;
+    hydratingUserId.current = undefined;
+    clearIdentity();
+    setCloudUserId(null);
+    setCloudAuthEmail(null);
+    setCloudAuthError(null);
+    setIsLoading(false);
+  }, [clearIdentity]);
+
   const hydrateAccount = useCallback(async (uid?: string) => {
-    setIsLoading(true);
+    const generation = ++hydrationGeneration.current;
+    const isCurrent = () => mounted.current && hydrationGeneration.current === generation;
+    const previousIdentity = verifiedIdentity.current;
+    const isSameIdentity = Boolean(previousIdentity && (!uid || uid === previousIdentity.userId));
+    let authenticationDenied = false;
+    hydratingUserId.current = uid || null;
+    if (!isSameIdentity) {
+      clearIdentity();
+      setIsLoading(true);
+    }
     try {
       const client = getClientSupabase();
       // getUser contacts Auth server; do not trust a legacy localStorage session.
       const { data: identity, error: authError } = await client.auth.getUser();
-      if (authError) throw authError;
+      if (!isCurrent()) return;
+      if (authError) {
+        authenticationDenied = authError.name === 'AuthSessionMissingError' ||
+          [400, 401, 403, 404, 422].includes(Number(authError.status));
+        throw authError;
+      }
       const user = identity.user;
       if (!user || (uid && user.id !== uid)) {
-        clearIdentity();
-        setCloudUserId(null);
-        setCloudAuthEmail(null);
-        setCloudAuthError(null);
+        clearSession();
         return;
       }
+      if (previousIdentity && previousIdentity.userId !== user.id) clearIdentity();
       setCloudUserId(user.id);
       setCloudAuthEmail(user.email || null);
       const { data: membership, error: memberError } = await client
@@ -62,6 +91,7 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
         .select('family_id,role,display_name')
         .eq('user_id', user.id)
         .maybeSingle();
+      if (!isCurrent()) return;
       if (memberError) throw memberError;
       if (!membership?.family_id) {
         clearIdentity();
@@ -69,13 +99,38 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
         return;
       }
       const m = membership as Membership;
+      if (previousIdentity && previousIdentity.familyId !== m.family_id) {
+        clearIdentity();
+        setIsLoading(true);
+      }
       const { data: record, error: recordError } = await client
         .from('milkflow_store')
         .select('value')
         .eq('key', 'family_data_' + m.family_id)
         .single();
+      if (!isCurrent()) return;
       if (recordError) throw recordError;
-      const { app, babies: babyList, storedFamily } = normalizeCloudSnapshot(record?.value);
+      const remote = normalizeCloudSnapshot(record?.value);
+      // Read at commit time, after the requests. A feeding/diaper recorded while
+      // they were in flight must survive this hydration and the next reload.
+      const cacheKey = 'milkflow_family_data_' + m.family_id;
+      const cachedRaw = localStorage.getItem(cacheKey);
+      let cachedApp: Record<string, any> = {};
+      if (cachedRaw) {
+        // Do not overwrite a corrupt or unreadable cache with an older server
+        // snapshot. The error leaves the existing data available for recovery.
+        const cached = JSON.parse(cachedRaw);
+        if (!cached || typeof cached !== 'object' || Array.isArray(cached)) {
+          throw new Error('O histórico salvo neste aparelho precisa ser recuperado.');
+        }
+        cachedApp = cached.data || cached.familyData || cached;
+      }
+      let app = mergeFamilySnapshots(cachedApp, remote.app);
+      for (const pending of readPendingFamilyWrites(localStorage, m.family_id)) {
+        app = mergeFamilySnapshots(app, pending.data);
+      }
+      const { babies: babyList } = normalizeCloudSnapshot({ data: app, babies: remote.babies });
+      const storedFamily = remote.storedFamily;
       // The family_id from protected membership is canonical. Never use
       // the old 6-digit pairing code or a family ID typed by a visitor.
       const family: Family = {
@@ -96,46 +151,89 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
         avatarColor: '#2563eb',
         joinedAt: user.created_at || new Date().toISOString(),
       };
-      // Persist only this authenticated family's snapshot, not a global
-      // backup or a fake login session.
-      localStorage.setItem('milkflow_family_data_' + m.family_id, JSON.stringify(app));
+      // Only the verified membership may select the cache. Pending records are
+      // retained by ID and are flushed separately by the persistence queue.
+      localStorage.setItem(cacheKey, JSON.stringify(app));
+      verifiedIdentity.current = { userId: user.id, familyId: m.family_id };
       setCurrentFamily(family);
       setCurrentUser(authUser(user, m));
       setFamilyMembers([member]);
       setBabies(babyList);
-      setActiveBabyIdState(babyList[0]?.id || null);
+      setActiveBabyIdState(previous => babyList.some(b => b.id === previous) ? previous : babyList[0]?.id || null);
       setCloudAuthError(null);
     } catch (error: any) {
-      clearIdentity();
+      if (!isCurrent()) return;
+      const denied = authenticationDenied || [401, 403].includes(Number(error?.status)) ||
+        ['42501', 'PGRST301', 'PGRST302', 'PGRST303', 'bad_jwt', 'session_not_found', 'user_not_found'].includes(error?.code);
+      // A transient connection error does not mean the user signed out. Keep
+      // the last verified identity; all database access still goes through RLS.
+      // A different account or a confirmed access denial must clear it.
+      if (!isSameIdentity || denied) clearIdentity();
+      if (authenticationDenied) {
+        setCloudUserId(null);
+        setCloudAuthEmail(null);
+      }
       setCloudAuthError('Não foi possível carregar a família: ' + (error?.message || 'erro de conexão'));
     } finally {
-      setIsLoading(false);
+      if (isCurrent()) {
+        hydratingUserId.current = undefined;
+        setIsLoading(false);
+      }
     }
-  }, [clearIdentity]);
+  }, [clearIdentity, clearSession]);
 
   useEffect(() => {
-    let mounted = true;
+    mounted.current = true;
+    let authTimer: ReturnType<typeof setTimeout> | undefined;
     const client = getClientSupabase();
     void hydrateAccount();
-    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
-      // Avoid awaiting a Supabase database request inside the Auth callback.
-      Promise.resolve().then(() => {
-        if (mounted) void hydrateAccount(session?.user?.id);
-      });
+    const { data: { subscription } } = client.auth.onAuthStateChange((event, session) => {
+      if (!mounted.current) return;
+      if (event === 'SIGNED_OUT' || (event === 'INITIAL_SESSION' && !session?.user)) {
+        clearTimeout(authTimer);
+        clearSession();
+        return;
+      }
+      const uid = session?.user?.id;
+      if (!uid) return;
+      // Supabase emits SIGNED_IN on focus and TOKEN_REFRESHED periodically.
+      // Neither is an instruction to replace the family's current local data.
+      if ((event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'INITIAL_SESSION') &&
+        verifiedIdentity.current?.userId === uid) return;
+      if (event === 'INITIAL_SESSION' && hydratingUserId.current !== undefined) return;
+      if (verifiedIdentity.current && verifiedIdentity.current.userId !== uid) {
+        clearSession();
+        setIsLoading(true);
+      }
+      clearTimeout(authTimer);
+      const generation = hydrationGeneration.current;
+      // Schedule outside the Auth lock; never await a Supabase request from
+      // within its onAuthStateChange callback.
+      authTimer = setTimeout(() => {
+        if (mounted.current && generation === hydrationGeneration.current && hydratingUserId.current !== uid) {
+          void hydrateAccount(uid);
+        }
+      }, 0);
     });
-    return () => { mounted = false; subscription.unsubscribe(); };
-  }, [hydrateAccount]);
+    return () => {
+      mounted.current = false;
+      hydrationGeneration.current += 1;
+      hydratingUserId.current = undefined;
+      clearTimeout(authTimer);
+      subscription.unsubscribe();
+    };
+  }, [hydrateAccount, clearSession]);
 
   const refreshCloudAccess = async () => {
     await hydrateAccount();
   };
   const signInWithEmail: AuthContextType['signInWithEmail'] = async (email, pass) => {
     try {
-      const { error } = await getClientSupabase().auth.signInWithPassword({
+      const { data, error } = await getClientSupabase().auth.signInWithPassword({
         email: email.trim().toLowerCase(), password: pass,
       });
       if (error) return { success: false, error: error.message };
-      await hydrateAccount();
+      await hydrateAccount(data.user?.id);
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e?.message || 'Erro ao entrar na conta.' };
@@ -173,10 +271,7 @@ export const CloudAuthProvider: React.FC<{ children: ReactNode }> = ({ children 
     }
   };
   const signOutUser = () => {
-    clearIdentity();
-    setCloudUserId(null);
-    setCloudAuthEmail(null);
-    setCloudAuthError(null);
+    clearSession();
     void getClientSupabase().auth.signOut();
   };
   const unsupported = () => {
