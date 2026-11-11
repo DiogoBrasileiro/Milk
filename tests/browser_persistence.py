@@ -225,6 +225,7 @@ async def run(args):
             api.fail_reads = True
             await page.locator("#cloud-sync-status-btn").click()
             await page.get_by_text("O Supabase recusou a consulta", exact=False).wait_for(timeout=10000)
+            await page.wait_for_function("() => document.querySelector('#cloud-sync-status-btn')?.title.includes('Consulta ao banco não confirmada')", timeout=5000)
             assert "Consulta ao banco não confirmada" in await badge(page), "read error was presented as an unsaved write"
             assert not await pending(page), "unexpected queued writes while testing read-only failure"
             api.fail_reads = False
