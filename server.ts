@@ -4,6 +4,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { cloudStore } from './server/cloudStore';
 import { familySnapshotData } from './server/familyPersistence';
+import { classifySupabaseFailure, type SyncIssueCode } from './src/lib/syncDiagnostics';
 import {
   testSupabaseHealth,
   syncFamilyDataToSupabase,
@@ -270,7 +271,9 @@ app.get('/api/family/:familyId/sync', async (req, res) => {
     if (!familyId) return res.status(400).json({ error: 'Family ID obrigatório' });
 
     let supabaseActive = false;
-    // A failed read preserves the local copy, but must not claim cloud success.
+    let supabaseIssue: SyncIssueCode | null = null;
+    // A missing or RLS-hidden row is NOT proof the family's history was deleted.
+    // Never overwrite the fallback copy or claim success without a remote row.
     try {
       const supaData = await loadFamilyDataFromSupabase(familyId);
       if (supaData) {
@@ -280,9 +283,13 @@ app.get('/api/family/:familyId/sync', async (req, res) => {
           data: familySnapshotData(supaData),
         });
         supabaseActive = true;
+      } else {
+        supabaseIssue = 'not_visible';
       }
-    } catch (e) {
-      console.warn('Supabase family read was not confirmed.');
+    } catch (error) {
+      supabaseIssue = classifySupabaseFailure(error);
+      // No SQL, identifiers, or credentials are written to the response/log.
+      console.warn('Supabase family read was not confirmed:', supabaseIssue);
     }
 
     const result = cloudStore.getFamilyData(familyId);
@@ -294,9 +301,10 @@ app.get('/api/family/:familyId/sync', async (req, res) => {
       familyData: result.familyData,
       serverTime: new Date().toISOString(),
       supabaseActive,
+      supabaseIssue,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: 'Não foi possível consultar o histórico.' });
   }
 });
 
@@ -346,9 +354,12 @@ app.post('/api/family/:familyId/sync', async (req, res) => {
       supabaseSynced: true,
     });
   } catch (err: any) {
+    const errorCode = classifySupabaseFailure(err);
+    console.warn('Supabase family write was not confirmed:', errorCode);
     return res.status(503).json({
       success: false,
       supabaseSynced: false,
+      errorCode,
       error: 'Gravação no Supabase não confirmada. Os registros pendentes serão reenviados.',
     });
   }
