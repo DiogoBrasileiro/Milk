@@ -6,6 +6,8 @@ const url = 'https://poagmqrrbscemlqqccfe.supabase.co';
 
 test('supports modern publishable and legacy anon public keys', () => {
   assert.doesNotThrow(() => validatePublicSupabaseConfig(url, 'sb_publishable_public_test_value'));
+  assert.doesNotThrow(() => validatePublicSupabaseConfig('http://127.0.0.1:4567', 'test_public_key'));
+  assert.throws(() => validatePublicSupabaseConfig('http://malicious.example', 'test_public_key'), { code: 'MILK_PROJECT_URL_MISSING' });
   assert.doesNotThrow(() => validatePublicSupabaseConfig(url, 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.fake-signature'));
 });
 
