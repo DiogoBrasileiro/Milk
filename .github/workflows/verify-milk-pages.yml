@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: milk-verification-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   persistence-browser:
     runs-on: ubuntu-latest
@@ -33,7 +37,15 @@ jobs:
       - name: Install isolated browser test runtime
         run: |
           python -m pip install playwright==1.56.0
-          python -m playwright install --with-deps chromium
+          # Hosted runners normally already include Chrome. Avoid downloading
+          # another browser and its OS packages when an installation is present.
+          if command -v google-chrome > /dev/null; then
+            printf 'MILK_BROWSER_EXECUTABLE=%s\n' "$(command -v google-chrome)" >> "$GITHUB_ENV"
+          elif command -v chromium > /dev/null; then
+            printf 'MILK_BROWSER_EXECUTABLE=%s\n' "$(command -v chromium)" >> "$GITHUB_ENV"
+          else
+            python -m playwright install --with-deps chromium
+          fi
       - name: Verify records, failures, retries and family isolation
         shell: bash
         run: |
@@ -47,7 +59,7 @@ jobs:
             if curl -fsS http://127.0.0.1:5178/ > /dev/null; then break; fi
             sleep 0.25
           done
-          python tests/browser_persistence.py --chromium ''
+          python tests/browser_persistence.py --chromium "${MILK_BROWSER_EXECUTABLE:-}"
 
   verify-public-url:
     runs-on: ubuntu-latest
