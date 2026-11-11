@@ -87,3 +87,58 @@ Não aplicar a migration de acesso público nem conectar o banco Cartório One.
 Os testes automatizados usam somente dados fictícios, não comprovam a escrita
 no Supabase de produção. É necessário backup verificado antes de qualquer
 alteração de RLS ou migração.
+
+## Incidente: `Invalid API key` (11/11/2026)
+
+A auditoria do aplicativo confirmou HTTP de erro `Invalid API key` na REST API
+do projeto **mamei**. Isso é um erro de chave API ou par URL/chave, **não prova**
+que a política RLS bloqueou a família, que a tabela foi apagada ou que dados
+foram perdidos. O código anterior usava uma chave `anon` JWT embutida quando
+não encontrava a variável de ambiente; esse fallback foi removido.
+
+### Recuperação sem perda de dados
+
+1. **Antes de qualquer outra ação**, em cada aparelho com histórico local,
+   exportar o backup JSON e guardar cópia privada. Não limpar dados do navegador,
+   desinstalar o PWA, sair da conta ou executar o recurso de reparo automático
+   sem um backup comparado.
+2. Entrar no dashboard do **projeto correto mamei**, em *Settings > API Keys*,
+   e copiar para o ambiente do servidor apenas a **publishable key** pública
+   (prefixo `sb_publishable_`) ou a `anon` pública legada. Uma chave
+   `sb_secret_`/service_role jamais deve entrar no browser, nesta aplicação
+   sem autenticação Supabase verificada ou no repositório público.
+3. Na **hospedagem que executa o servidor Express** (Google AI Studio/Cloud Run,
+   se esta for a instalação em uso), definir `SUPABASE_URL` e
+   `SUPABASE_PUBLISHABLE_KEY` com valores do **mesmo projeto**. Usar
+   `SUPABASE_ANON_KEY` somente como alternativa legada. Publicar nova revisão
+   do **frontend e backend**, ambos vindos do mesmo commit, após conferir
+   as variáveis. A publicação GitHub Pages usa `MILK_SUPABASE_*` como variáveis
+   próprias do GitHub Actions e **não** atualiza o Cloud Run.
+4. Conferir `/api/supabase/status`, depois salvar um registro controlado e
+   validar resposta da rota de gravação com `supabaseSynced: true` e
+   confirmar leitura desse mesmo registro no banco. Comparar quantidade/IDs com
+   o backup anterior e conferir nos dois aparelhos. A API de saúde só testa
+   leitura da tabela: `connected: true` não comprova que a família pode gravar.
+5. Caso, depois de corrigir a chave, apareça erro RLS, **não** ativar
+   `FOR ALL TO anon USING(true)` nem ampliar o acesso entre famílias. Auditar
+   o modelo de autenticação, isolamento e memberships e aplicar migração
+   aprovada somente após backup e testes de permissões.
+
+### Proteções implementadas
+
+- Nenhuma chave JWT antiga é embutida no código como fallback.
+- URL e chave pública explícitas são exigidas no servidor; chave secreta é
+  recusada para impedir desativação involuntária da RLS.
+- A API reporta `invalid_api_key`, `missing_configuration` ou RLS como
+  falhas distintas, sem devolver tokens, SQL de erro ou registros.
+- O botão da auditoria usa a fila local do aplicativo, não a rota legada,
+  e só exibe sucesso após confirmação de gravação/leitura.
+- `100% local` significa apenas consistência dos registros analisados, não
+  cópia em nuvem.
+- A API pública de alteração das credenciais foi desativada. O painel deixou
+  de oferecer SQL permissivo que colocaria todas as famílias em risco.
+
+**Limite de homologação:** o conector Supabase acessível no chat consultado
+estava associado ao Cartório One, não ao projeto mamei. Os testes deste PR
+são com dados sintéticos. Não alterar o Cartório One nem assumir que o backend
+Cloud Run já foi atualizado após o merge.
