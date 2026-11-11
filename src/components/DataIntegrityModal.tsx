@@ -23,7 +23,7 @@ import {
   DataIntegrityIssue,
 } from '../services/dataIntegrityService';
 import { useApp } from '../context/AppContext';
-import { useAuth } from '../context/AuthContext';
+import { IS_CLOUD_PAGES, IS_STATIC_PAGES } from '../lib/deployment';
 import { checkSupabaseStatus, SupabaseStatus, SUPABASE_URL } from '../lib/supabaseClient';
 
 interface DataIntegrityModalProps {
@@ -51,9 +51,9 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
     persistFamilyData,
     exportDataJson,
     triggerUndoToast,
+    forceCloudSync,
+    cloudSyncStatus,
   } = useApp();
-
-  const { currentFamily } = useAuth();
 
   const [selectedIssueIds, setSelectedIssueIds] = useState<string[]>(() =>
     report.issues.filter((i) => i.autoFixAvailable).map((i) => i.id)
@@ -65,8 +65,6 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
   const [supabaseStatus, setSupabaseStatus] = useState<SupabaseStatus | null>(null);
   const [isCheckingSupabase, setIsCheckingSupabase] = useState(false);
   const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
-  const [copiedSql, setCopiedSql] = useState(false);
-  const [showSqlSchema, setShowSqlSchema] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -89,35 +87,20 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
   const handleSyncToSupabase = async () => {
     setIsSyncingSupabase(true);
     try {
-      const famId = currentFamily?.id || 'local-unassigned-family';
-      const res = await fetch(`/api/supabase/sync/${famId}`, {
-        method: 'POST',
-      });
-      if (res.ok) {
-        triggerUndoToast('✓ Dados sincronizados com o Supabase com sucesso!', () => {});
-        await handleCheckSupabase();
+      // Use the durable outbox; HTTP 200 alone is never proof of persistence.
+      const confirmed = await forceCloudSync();
+      const status = await checkSupabaseStatus();
+      setSupabaseStatus(status);
+      if (confirmed && status.connected && !IS_CLOUD_PAGES && !IS_STATIC_PAGES) {
+        triggerUndoToast('✓ Envios pendentes confirmados e banco consultado com sucesso.', () => {});
       } else {
-        triggerUndoToast('Aviso ao sincronizar com Supabase', () => {});
+        triggerUndoToast('Sincronização não confirmada. Registros locais preservados; exporte um backup.', () => {});
       }
-    } catch (err) {
-      console.warn('Falha no sync Supabase', err);
+    } catch (error) {
+      console.warn('Falha na tentativa de sincronização.', error);
+      triggerUndoToast('Falha na sincronização. Dados locais preservados; exporte um backup.', () => {});
     } finally {
       setIsSyncingSupabase(false);
-    }
-  };
-
-  const handleCopySql = async () => {
-    try {
-      const res = await fetch('/api/supabase/schema');
-      const data = await res.json();
-      if (data.sql) {
-        await navigator.clipboard.writeText(data.sql);
-        setCopiedSql(true);
-        triggerUndoToast('✓ Script SQL do Supabase copiado!', () => {});
-        setTimeout(() => setCopiedSql(false), 3000);
-      }
-    } catch (e) {
-      console.error(e);
     }
   };
 
