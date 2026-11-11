@@ -79,7 +79,7 @@ export async function testSupabaseHealth(): Promise<SupabaseHealthResult> {
       // Check if error is just missing table (PGRST116 / 42P01 / 404), which means Supabase is REACHABLE and responsive
       const isMissingTable =
         error.code === '42P01' ||
-        error.code === 'PGRST116' ||
+        error.code === 'PGRST205' ||
         error.code === 'PGRST204' ||
         error.message?.includes('does not exist') ||
         error.message?.includes('relation') ||
@@ -87,10 +87,10 @@ export async function testSupabaseHealth(): Promise<SupabaseHealthResult> {
 
       if (isMissingTable) {
         return {
-          connected: true,
+          connected: false,
           projectUrl,
           latencyMs,
-          message: 'Supabase conectado com sucesso (tabela milkflow_store pronta para inicialização)',
+          message: 'Supabase acessível, mas a tabela milkflow_store está ausente ou indisponível. A gravação não está confirmada.',
           testedAt,
           tableStatus: {
             familyDataExists: false,
