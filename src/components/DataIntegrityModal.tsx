@@ -387,14 +387,7 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                   {isSyncingSupabase ? 'Conferindo...' : 'Tentar sincronizar'}
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => setShowSqlSchema(!showSqlSchema)}
-                  className="px-2.5 py-1.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 text-gray-700 dark:text-gray-300 text-xs font-medium transition"
-                  title="Ver script SQL de tabelas"
-                >
-                  SQL
-                </button>
+
               </div>
             </div>
 
@@ -409,38 +402,13 @@ export const DataIntegrityModal: React.FC<DataIntegrityModalProps> = ({
                 </div>
                 {!supabaseStatus.connected && (
                   <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-[11px] leading-relaxed">
-                    <strong>Motivo identificado:</strong> O Supabase para REST API precisa da chave <strong>`anon` / `public` (formato JWT que começa com <code>eyJhbGciOi...</code>)</strong>. No painel do Supabase, acesse: <em>Project Settings ➔ API ➔ Project API Keys ➔ <strong>anon public</strong></em>.
+                    <strong>Correção necessária:</strong> no projeto Supabase do Milk, confira a URL e a chave pública <code>publishable</code> (prefixo <code>sb_publishable_</code>) ou a chave <code>anon</code> legada. Configure-a no ambiente do servidor e republique o backend. Não use <code>service_role</code> ou <code>sb_secret_</code> e não libere RLS publicamente. SQL não corrige chaves inválidas.
                   </div>
                 )}
               </div>
             )}
 
-            {showSqlSchema && (
-              <div className="mt-3 p-3 bg-gray-900 text-emerald-400 font-mono text-[11px] rounded-xl border border-gray-800 space-y-2">
-                <div className="flex items-center justify-between text-gray-400 text-[10px]">
-                  <span>Script SQL para o Editor do Supabase (Opcional)</span>
-                  <button
-                    onClick={handleCopySql}
-                    className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 font-bold"
-                  >
-                    {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copiedSql ? 'Copiado!' : 'Copiar SQL'}
-                  </button>
-                </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap select-all text-[10px] text-gray-300">
-{`CREATE TABLE IF NOT EXISTS public.milkflow_store (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
-);
 
-ALTER TABLE public.milkflow_store ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Acesso público MilkFlow" ON public.milkflow_store
-    FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);`}
-                </pre>
-              </div>
-            )}
           </div>
 
           {/* List of Detected Issues */}
