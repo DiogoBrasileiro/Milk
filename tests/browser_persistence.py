@@ -335,9 +335,10 @@ async def run(args):
             await add_diaper(page)
             await wait_counts(page, 3, 7)
             await page.get_by_text("Chave API inválida no Supabase", exact=False).wait_for(timeout=10000)
+            await wait_pending_error(page)
             assert await pending(page), "invalid key must not discard new diaper records"
             api.invalid_api_key = False
-            await page.evaluate("window.dispatchEvent(new Event('online'))")
+            await page.locator("#cloud-sync-status-btn").click()
             await wait_remote(page, api, 3, 7)
             await wait_acknowledged(page)
             outcomes.append("PASS: Invalid API key is diagnosed without false audit success or data loss")
